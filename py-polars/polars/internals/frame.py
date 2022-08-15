@@ -5876,6 +5876,55 @@ class DataFrame:
             names = [names]
         return self._from_pydf(self._df.unnest(names))
 
+    def mfilter(self: DF, *predicates: pli.Expr) -> DF:
+        result = pli.lit(True)
+        for arg in predicates: 
+            result = result & arg # type: ignore
+        return self.filter(result)
+
+    def mwith(self: DF, 
+        *exprs: pli.Expr | pli.Series | str | int | float| bool, 
+        **named_exprs: pli.Expr | pli.Series | str | int | float| bool
+    )  -> DF:
+        return self.with_columns(_collect_expressions(*exprs, **named_exprs))
+        
+    def mselect(self: DF, 
+        *exprs: pli.Expr | pli.Series | str | int | float| bool, 
+        **named_exprs: pli.Expr | pli.Series | str | int | float| bool
+    )  -> DF:
+        return self.select(_collect_expressions(*exprs, **named_exprs))
+
+    def mjoin(
+        self: DF,
+        other: LazyFrame,
+        left_on: str | pli.Expr | list[str | pli.Expr] | None = None,
+        right_on: str | pli.Expr | list[str | pli.Expr] | None = None,
+        on: str | pli.Expr | list[str | pli.Expr] | None = None,
+        how: JoinStrategy = "inner",
+        suffix: str = "_right",
+    ) -> DF:
+        if isinstance(on, str):
+            on = [on]
+        r = (
+            self
+            .drop(list(set(self.columns) & (set(other.columns) - set(on)))) 
+            .join(other, on=on, left_on=left_on, right_on = right_on, how = how, suffix = suffix) 
+        )
+        return r
+    
+    def mconcat(self: DF, other: DF, how: str = "vertical") -> DF:
+        return pl.concat([self, other], how = how)
+
+
+def _collect_expressions(*exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> List[pl.Expr]:
+    expr_list = list(exprs)
+    for key, expr in named_exprs.items():
+        if not isinstance(expr, pl.Expr):
+            expr = pl.lit(expr)
+        expr_list.append(expr.alias(key)) #type: ignore
+    return expr_list #type: ignore
+
+
 
 class RollingGroupBy(Generic[DF]):
     """
@@ -5908,6 +5957,11 @@ class RollingGroupBy(Generic[DF]):
             .agg(aggs)
             .collect(no_optimization=True, string_cache=False)
         )
+    
+    def magg(self: DF, *exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> DF:
+        return self.agg(_collect_expressions(*exprs, **named_exprs))
+
+
 
 
 class DynamicGroupBy(Generic[DF]):
@@ -5954,6 +6008,10 @@ class DynamicGroupBy(Generic[DF]):
             .agg(aggs)
             .collect(no_optimization=True, string_cache=False)
         )
+    
+    def magg(self: DF, *exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> DF:
+        return self.agg(_collect_expressions(*exprs, **named_exprs))
+
 
 
 class GroupBy(Generic[DF]):
@@ -6751,6 +6809,17 @@ class GroupBy(Generic[DF]):
         """
         return self.agg(pli.all().list())
 
+    def magg(self: DF, *exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> DF:
+        return self.agg(_collect_expressions(*exprs, **named_exprs))
+
+
+def _collect_expressions(*exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> List[pli.Expr]:
+    expr_list = list(exprs)
+    for key, expr in named_exprs.items():
+        if not isinstance(expr, pli.Expr):
+            expr = pli.lit(expr)
+        expr_list.append(expr.alias(key)) #type: ignore
+    return expr_list #type: ignore
 
 class PivotOps(Generic[DF]):
     """Utility class returned in a pivot operation."""

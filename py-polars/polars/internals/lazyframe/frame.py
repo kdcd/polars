@@ -62,6 +62,7 @@ if TYPE_CHECKING:
 # Used to indicate when LazyFrame methods return the same type as self,
 # including sub-classes.
 LDF = TypeVar("LDF", bound="LazyFrame")
+T = TypeVar("T")
 
 
 def wrap_ldf(ldf: PyLazyFrame) -> LazyFrame:
@@ -72,6 +73,8 @@ class LazyFrame:
     """Representation of a Lazy computation graph/query."""
 
     _ldf: PyLazyFrame
+
+
 
     @classmethod
     def _from_pyldf(cls: type[LDF], ldf: PyLazyFrame) -> LDF:
@@ -351,7 +354,7 @@ class LazyFrame:
     def __contains__(self: LDF, key: str) -> bool:
         return key in self.columns
 
-    def pipe(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    def pipe(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         """
         Apply a function on Self.
 
@@ -822,9 +825,6 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
 
     def __deepcopy__(self: LDF, memo: None = None) -> LDF:
         return self.clone()
-
-    def mfilter(self: LDF, *predicates: pli.Expr) -> LDF:
-        return self
 
     def filter(self: LDF, predicate: pli.Expr | str | pli.Series | list[bool]) -> LDF:
         """
@@ -2371,6 +2371,46 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             names = [names]
         return self._from_pyldf(self._ldf.unnest(names))
 
+    def mfilter(self: LDF, *predicates: pli.Expr) -> LDF:
+        result = pli.lit(True)
+        for arg in predicates: 
+            result = result & arg # type: ignore
+        return self.filter(result)
+
+    def mwith(self: LDF, *exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> LDF:
+        return self.with_columns(_collect_expressions(*exprs, **named_exprs))
+        
+    def mselect(self: LDF, *exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> LDF:
+        return self.select(_collect_expressions(*exprs, **named_exprs))
+
+    def mjoin(
+        self: LDF,
+        other: LazyFrame,
+        left_on: str | pli.Expr | list[str | pli.Expr] | None = None,
+        right_on: str | pli.Expr | list[str | pli.Expr] | None = None,
+        on: str | pli.Expr | list[str | pli.Expr] | None = None,
+        how: JoinStrategy = "inner",
+        suffix: str = "_right",
+        allow_parallel: bool = True,
+        force_parallel: bool = False,
+    ) -> LDF:
+        if isinstance(on, str):
+            on = [on]
+        r = (
+            self
+            .drop(list(set(self.columns) & (set(other.columns) - set(on)))) 
+            .join(other, on=on, left_on=left_on, right_on = right_on, how = how, suffix = suffix, allow_parallel=allow_parallel, force_parallel=force_parallel) 
+        )
+        return r
+
+
+def _collect_expressions(*exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> List[pli.Expr]:
+    expr_list = list(exprs)
+    for key, expr in named_exprs.items():
+        if not isinstance(expr, pli.Expr):
+            expr = pli.lit(expr)
+        expr_list.append(expr.alias(key)) #type: ignore
+    return expr_list #type: ignore
 
 def _prepare_groupby_inputs(
     by: str | list[str] | pli.Expr | list[pli.Expr] | None,

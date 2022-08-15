@@ -5124,6 +5124,16 @@ class Expr:
         """Create an object namespace of all struct related methods."""
         return ExprStructNameSpace(self)
 
+    def rel_to(self, other: Expr) -> Expr:
+        return (self / other) - 1
+        
+    def mfilter(self, *args: List[pl.Expr]) -> Expr:
+        result = pli.lit(True)
+        for arg in args: 
+            result = result & arg # type: ignore
+        return self.filter(result)
+
+
 
 def _prepare_alpha(
     com: float | None = None,
