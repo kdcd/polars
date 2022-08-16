@@ -103,6 +103,7 @@ else:
 # A type variable used to refer to a polars.DataFrame or any subclass of it.
 # Used to annotate DataFrame methods which returns the same type as self.
 DF = TypeVar("DF", bound="DataFrame")
+T = TypeVar("T")
 
 if TYPE_CHECKING:
     from polars.internals.type_aliases import (
@@ -2709,7 +2710,7 @@ class DataFrame:
             subset = [subset]
         return self._from_pydf(self._df.drop_nulls(subset))
 
-    def pipe(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    def pipe(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         """
         Apply a function on Self.
 
@@ -5913,7 +5914,7 @@ class DataFrame:
         return r
     
     def mconcat(self: DF, other: DF, how: str = "vertical") -> DF:
-        return pl.concat([self, other], how = how)
+        return pli.concat([self, other], how = how)
 
 
 def _collect_expressions(*exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> List[pl.Expr]:
