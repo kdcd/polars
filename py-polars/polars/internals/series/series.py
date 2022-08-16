@@ -228,7 +228,6 @@ class Series:
             else:
                 raise ValueError("Series name must be a string.")
 
-        # TODO: Remove if-statement below once Series name is allowed to be None
         if name is None:
             name = ""
 
@@ -738,7 +737,7 @@ class Series:
         └─────┘
 
         >>> type(df)
-        <class 'polars.internals.frame.DataFrame'>
+        <class 'polars.internals.dataframe.frame.DataFrame'>
 
         """
         return pli.wrap_df(PyDataFrame([self._s]))
