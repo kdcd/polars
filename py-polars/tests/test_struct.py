@@ -136,6 +136,16 @@ def test_value_counts_expr() -> None:
     ]
 
 
+def test_value_counts_logical_type() -> None:
+    # test logical type
+    df = pl.DataFrame({"a": ["b", "c"]}).with_column(
+        pl.col("a").cast(pl.Categorical).alias("ac")
+    )
+    out = df.select([pl.all().value_counts()])
+    assert out["ac"].struct.field("ac").dtype == pl.Categorical
+    assert out["a"].struct.field("a").dtype == pl.Utf8
+
+
 def test_nested_struct() -> None:
     df = pl.DataFrame({"d": [1, 2, 3], "e": ["foo", "bar", "biz"]})
     # Nest the datafame
@@ -537,7 +547,6 @@ def test_is_in_struct() -> None:
             ],
         }
     )
-    df
 
     assert df.filter(pl.col("struct_elem").is_in("struct_list")).to_dict(False) == {
         "struct_elem": [{"a": 1, "b": 11}],
@@ -613,3 +622,13 @@ def test_struct_groupby_field_agg_4216() -> None:
     assert df.groupby("c").agg(pl.col("a").struct.field("b").count()).to_dict(
         False
     ) == {"c": [0], "b": [1]}
+
+
+def test_struct_getitem() -> None:
+    assert pl.Series([{"a": 1, "b": 2}]).struct["b"].name == "b"
+    assert pl.Series([{"a": 1, "b": 2}]).struct[0].name == "a"
+    assert pl.Series([{"a": 1, "b": 2}]).struct[1].name == "b"
+    assert pl.Series([{"a": 1, "b": 2}]).struct[-1].name == "b"
+    assert pl.Series([{"a": 1, "b": 2}]).to_frame().select(
+        [pl.col("").struct[0]]
+    ).to_dict(False) == {"a": [1]}

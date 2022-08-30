@@ -5,11 +5,7 @@ from typing import TYPE_CHECKING, Sequence, overload
 
 from polars import internals as pli
 from polars.datatypes import Categorical, Date, Float64
-from polars.utils import (
-    _datetime_to_pl_timestamp,
-    _timedelta_to_pl_duration,
-    in_nanoseconds_window,
-)
+from polars.utils import _datetime_to_pl_timestamp, _timedelta_to_pl_duration
 
 try:
     from polars.polars import concat_df as _concat_df
@@ -27,7 +23,9 @@ if TYPE_CHECKING:
     from polars.internals.type_aliases import ClosedWindow, ConcatMethod, TimeUnit
 
 
-def get_dummies(df: pli.DataFrame) -> pli.DataFrame:
+def get_dummies(
+    df: pli.DataFrame, *, columns: list[str] | None = None
+) -> pli.DataFrame:
     """
     Convert categorical variables into dummy/indicator variables.
 
@@ -35,9 +33,12 @@ def get_dummies(df: pli.DataFrame) -> pli.DataFrame:
     ----------
     df
         DataFrame to convert.
+    columns
+        A subset of columns to convert to dummy variables. ``None`` means
+        "all columns".
 
     """
-    return df.to_dummies()
+    return df.to_dummies(columns=columns)
 
 
 @overload
@@ -246,12 +247,12 @@ def date_range(
     high, high_is_date = _ensure_datetime(high)
 
     tu: TimeUnit
-    if in_nanoseconds_window(low) and in_nanoseconds_window(high) and time_unit is None:
-        tu = "ns"
-    elif time_unit is not None:
+    if time_unit is not None:
         tu = time_unit
+    elif "ns" in interval:
+        tu = "ns"
     else:
-        tu = "ms"
+        tu = "us"
 
     start = _datetime_to_pl_timestamp(low, tu)
     stop = _datetime_to_pl_timestamp(high, tu)

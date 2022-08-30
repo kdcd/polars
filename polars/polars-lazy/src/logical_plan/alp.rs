@@ -7,6 +7,7 @@ use polars_core::frame::explode::MeltArgs;
 use polars_core::prelude::*;
 use polars_utils::arena::{Arena, Node};
 
+use crate::logical_plan::schema::det_join_schema;
 #[cfg(feature = "ipc")]
 use crate::logical_plan::IpcScanOptionsInner;
 #[cfg(feature = "parquet")]
@@ -104,6 +105,7 @@ pub enum ALogicalPlan {
     },
     Cache {
         input: Node,
+        id: usize,
     },
     Aggregate {
         input: Node,
@@ -185,7 +187,7 @@ impl ALogicalPlan {
             #[cfg(feature = "python")]
             PythonScan { options } => &options.schema,
             Union { inputs, .. } => return arena.get(inputs[0]).schema(arena),
-            Cache { input } => return arena.get(*input).schema(arena),
+            Cache { input, .. } => return arena.get(*input).schema(arena),
             Sort { input, .. } => return arena.get(*input).schema(arena),
             Explode { schema, .. } => schema,
             #[cfg(feature = "parquet")]
@@ -319,7 +321,10 @@ impl ALogicalPlan {
                 columns: columns.clone(),
                 schema: schema.clone(),
             },
-            Cache { .. } => Cache { input: inputs[0] },
+            Cache { id, .. } => Cache {
+                input: inputs[0],
+                id: *id,
+            },
             Distinct { options, .. } => Distinct {
                 input: inputs[0],
                 options: options.clone(),
@@ -788,37 +793,18 @@ impl<'a> ALogicalPlanBuilder<'a> {
     ) -> Self {
         let schema_left = self.schema();
         let schema_right = self.lp_arena.get(other).schema(self.lp_arena);
-
-        // column names of left table
-        let mut names: PlHashSet<&str> =
-            PlHashSet::with_capacity(schema_left.len() + schema_right.len());
-        let mut new_schema = Schema::with_capacity(schema_left.len() + schema_right.len());
-
-        for (name, dtype) in schema_left.iter() {
-            names.insert(name.as_str());
-            new_schema.with_column(name.to_string(), dtype.clone())
-        }
-
-        let right_names: PlHashSet<_> = right_on
+        let right_names = right_on
             .iter()
             .map(|e| {
-                aexpr_to_root_column_name(*e, self.expr_arena)
-                    .expect("could not determine join column names")
+                self.expr_arena
+                    .get(*e)
+                    .to_field(&schema_right, Context::Default, self.expr_arena)
+                    .unwrap()
+                    .name
             })
-            .collect();
+            .collect::<Vec<_>>();
 
-        for (name, dtype) in schema_right.iter() {
-            if !right_names.contains(name.as_str()) {
-                if names.contains(name.as_str()) {
-                    let new_name = format!("{}{}", name, options.suffix.as_ref());
-                    new_schema.with_column(new_name, dtype.clone());
-                } else {
-                    new_schema.with_column(name.to_string(), dtype.clone());
-                }
-            }
-        }
-
-        let schema = Arc::new(new_schema);
+        let schema = det_join_schema(&schema_left, &schema_right, &right_names, &options);
 
         let lp = ALogicalPlan::Join {
             input_left: self.root,
@@ -828,7 +814,7 @@ impl<'a> ALogicalPlanBuilder<'a> {
             right_on,
             options,
         };
-        drop(names);
+
         let root = self.lp_arena.add(lp);
         Self::new(root, self.expr_arena, self.lp_arena)
     }

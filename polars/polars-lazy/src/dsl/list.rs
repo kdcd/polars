@@ -5,9 +5,11 @@ use polars_core::series::ops::NullBehavior;
 use polars_ops::prelude::*;
 use rayon::prelude::*;
 
-#[cfg(feature = "list_eval")]
-use crate::dsl::eval::prepare_eval_expr;
 use crate::dsl::function_expr::FunctionExpr;
+#[cfg(feature = "list_eval")]
+use crate::physical_plan::exotic::prepare_eval_expr;
+#[cfg(feature = "list_eval")]
+use crate::physical_plan::exotic::prepare_expression_for_context;
 use crate::physical_plan::state::ExecutionState;
 use crate::prelude::*;
 
@@ -190,7 +192,7 @@ impl ListNameSpace {
                 move |s| Ok(s.list()?.lst_shift(periods).into_series()),
                 GetOutput::same_type(),
             )
-            .with_fmt("arr.diff")
+            .with_fmt("arr.shift")
     }
 
     /// Slice every sublist.
@@ -223,24 +225,8 @@ impl ListNameSpace {
         let func = move |s: Series| {
             let lst = s.list()?;
 
-            let mut lp_arena = Arena::with_capacity(8);
-            let mut expr_arena = Arena::with_capacity(10);
-
-            // create a dummy lazyframe and run a very simple optimization run so that
-            // type coercion and simplify expression optimizations run.
-            let column = Series::full_null("", 0, &lst.inner_dtype());
-            let lf = DataFrame::new_no_checks(vec![column])
-                .lazy()
-                .without_optimizations()
-                .with_simplify_expr(true)
-                .select([expr.clone()]);
-            let optimized = lf.optimize(&mut lp_arena, &mut expr_arena).unwrap();
-            let lp = lp_arena.get(optimized);
-            let aexpr = lp.get_exprs().pop().unwrap();
-
-            let planner = DefaultPlanner::default();
             let phys_expr =
-                planner.create_physical_expr(aexpr, Context::Default, &mut expr_arena)?;
+                prepare_expression_for_context("", &expr, &lst.inner_dtype(), Context::Default)?;
 
             let state = ExecutionState::new();
 
@@ -366,6 +352,7 @@ impl ListNameSpace {
                 input_wildcard_expansion: true,
                 auto_explode: true,
                 fmt_str: "arr.contains",
+                ..Default::default()
             },
         }
     }

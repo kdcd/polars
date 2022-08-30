@@ -1,4 +1,6 @@
 pub mod executors;
+#[cfg(any(feature = "list_eval", feature = "pivot"))]
+pub(crate) mod exotic;
 pub mod expressions;
 #[cfg(any(feature = "ipc", feature = "parquet", feature = "csv-file"))]
 mod file_cache;
@@ -10,19 +12,6 @@ use polars_io::predicates::PhysicalIoExpr;
 
 use crate::physical_plan::state::ExecutionState;
 use crate::prelude::*;
-
-/// A type that implements this transforms a LogicalPlan to a physical plan.
-///
-/// We could produce different physical plans with different goals in mind, e.g. memory optimized
-/// performance optimized, out of core, etc.
-pub trait PhysicalPlanner {
-    fn create_physical_plan(
-        &self,
-        root: Node,
-        lp_arena: &mut Arena<ALogicalPlan>,
-        expr_arena: &mut Arena<AExpr>,
-    ) -> Result<Box<dyn Executor>>;
-}
 
 // Executor are the executors of the physical plan and produce DataFrames. They
 // combine physical expressions, which produce Series.

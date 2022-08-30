@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Sequence, TypeVar, overload
 
 from polars import internals as pli
 from polars.cfg import Config
-from polars.datatypes import DataType, py_type_to_dtype
+from polars.datatypes import DataType, PolarsDataType, Schema, py_type_to_dtype
 from polars.internals.lazyframe.groupby import LazyGroupBy
 from polars.internals.slice import LazyPolarsSlice
 from polars.utils import (
@@ -91,7 +91,7 @@ class LazyFrame:
         comment_char: str | None = None,
         quote_char: str | None = r'"',
         skip_rows: int = 0,
-        dtypes: dict[str, type[DataType]] | None = None,
+        dtypes: dict[str, PolarsDataType] | None = None,
         null_values: str | list[str] | dict[str, str] | None = None,
         ignore_errors: bool = False,
         cache: bool = True,
@@ -117,7 +117,7 @@ class LazyFrame:
         polars.io.scan_csv
 
         """
-        dtype_list: list[tuple[str, type[DataType]]] | None = None
+        dtype_list: list[tuple[str, PolarsDataType]] | None = None
         if dtypes is not None:
             dtype_list = []
             for k, v in dtypes.items():
@@ -230,6 +230,40 @@ class LazyFrame:
             rechunk,
             _prepare_row_count_args(row_count_name, row_count_offset),
             memory_map=memory_map,
+        )
+        return self
+
+    @classmethod
+    def scan_ndjson(
+        cls: type[LDF],
+        file: str,
+        infer_schema_length: int | None = None,
+        batch_size: int | None = None,
+        n_rows: int | None = None,
+        low_memory: bool = False,
+        rechunk: bool = True,
+        row_count_name: str | None = None,
+        row_count_offset: int = 0,
+    ) -> LDF:
+        """
+        Lazily read from a JSON file.
+
+        Use ``pl.scan_ndjson`` to dispatch to this method.
+
+        See Also
+        --------
+        polars.io.scan_ndjson
+
+        """
+        self = cls.__new__(cls)
+        self._ldf = PyLazyFrame.new_from_ndjson(
+            file,
+            infer_schema_length,
+            batch_size,
+            n_rows,
+            low_memory,
+            rechunk,
+            _prepare_row_count_args(row_count_name, row_count_offset),
         )
         return self
 
@@ -754,7 +788,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         return self._ldf.dtypes()
 
     @property
-    def schema(self) -> dict[str, type[DataType]]:
+    def schema(self) -> Schema:
         """
         Get a dict[column name, DataType]
 
@@ -1761,14 +1795,15 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
 
     def slice(self: LDF, offset: int, length: int | None = None) -> LDF:
         """
-        Slice the DataFrame.
+        Get a slice of this DataFrame.
 
         Parameters
         ----------
         offset
-            Start index.
+            Start index. Negative indexing is supported.
         length
-            Length of the slice.
+            Length of the slice. If set to ``None``, all rows starting at the offset
+            will be selected.
 
         Examples
         --------
@@ -1801,44 +1836,45 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
 
     def limit(self: LDF, n: int = 5) -> LDF:
         """
-        Limit the LazyFrame to the first `n` rows.
+        Get the first `n` rows.
 
-        .. note::
-            Consider using the :func:`fetch` operation when you only want to test your
-            query. The :func:`fetch` operation will load the first `n` rows at the scan
-            level, whereas the :func:`head`/:func:`limit` are applied at the end.
+        Alias for :func:`LazyFrame.head`.
 
         Parameters
         ----------
         n
-            Number of rows.
+            Number of rows to return.
+
+        Notes
+        -----
+        Consider using the :func:`fetch` operation if you only want to test your
+        query. The :func:`fetch` operation will load the first `n` rows at the scan
+        level, whereas the :func:`head`/:func:`limit` are applied at the end.
+
+        """
+        return self.head(n)
+
+    def head(self: LDF, n: int = 5) -> LDF:
+        """
+        Get the first `n` rows.
+
+        Parameters
+        ----------
+        n
+            Number of rows to return.
+
+        Notes
+        -----
+        Consider using the :func:`fetch` operation if you only want to test your
+        query. The :func:`fetch` operation will load the first `n` rows at the scan
+        level, whereas the :func:`head`/:func:`limit` are applied at the end.
 
         """
         return self.slice(0, n)
 
-    def head(self: LDF, n: int = 5) -> LDF:
-        """
-        Get the first `n` rows of the DataFrame.
-
-        .. note::
-            Consider using the :func:`fetch` operation when you only want to test your
-            query. The :func:`fetch` operation will load the first `n` rows at the scan
-            level, whereas the :func:`head`/:func:`limit` are applied at the end.
-
-        This operation instead loads all the rows and only applies the ``head`` at the
-        end.
-
-        Parameters
-        ----------
-        n
-            Number of rows.
-
-        """
-        return self.limit(n)
-
     def tail(self: LDF, n: int = 5) -> LDF:
         """
-        Get the last `n` rows of the DataFrame.
+        Get the last `n` rows.
 
         Parameters
         ----------
@@ -1940,7 +1976,7 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         """
         return self.select(pli.all().fill_null(value, strategy, limit))
 
-    def fill_nan(self: LDF, fill_value: int | str | float | pli.Expr) -> LDF:
+    def fill_nan(self: LDF, fill_value: int | str | float | pli.Expr | None) -> LDF:
         """
         Fill floating point NaN values.
 
@@ -2256,11 +2292,26 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
         f: Callable[[pli.DataFrame], pli.DataFrame],
         predicate_pushdown: bool = True,
         projection_pushdown: bool = True,
+        slice_pushdown: bool = True,
         no_optimizations: bool = False,
+        schema: None | Schema = None,
+        validate_output_schema: bool = True,
     ) -> LDF:
         """
         Apply a custom function. It is important that the function returns a Polars
         DataFrame.
+
+        .. warning::
+            The ``schema`` of a `LazyFrame` must always be correct.
+            It is up to the caller of this function to ensure that
+            this invariant is uphold.
+
+        .. warning::
+            It is important that the optimization flags are correct.
+            If the custom function for instance does an aggregation
+            of a column, ``predicate_pushdown`` should not be allowed,
+            as this prunes rows and will influence your aggregation
+            results.
 
         Parameters
         ----------
@@ -2270,15 +2321,34 @@ naive plan: (run LazyFrame.describe_optimized_plan() to see the optimized plan)
             Allow predicate pushdown optimization to pass this node.
         projection_pushdown
             Allow projection pushdown optimization to pass this node.
+        slice_pushdown
+            Allow slice pushdown optimization to pass this node.
         no_optimizations
             Turn off all optimizations past this point.
+        schema
+            Output schema of the function, if set to ``None``
+            we assume that the schema will remain unchanged
+            by the applied function.
+        validate_output_schema
+            It is paramount that polars' schema is correct. This flag
+            will ensure that the output schema of this function will
+            be checked with the expected schema. Setting this to ``False``
+            will not do this check, but may lead to hard to debug bugs.
 
         """
         if no_optimizations:
             predicate_pushdown = False
             projection_pushdown = False
+            slice_pushdown = False
         return self._from_pyldf(
-            self._ldf.map(f, predicate_pushdown, projection_pushdown)
+            self._ldf.map(
+                f,
+                predicate_pushdown,
+                projection_pushdown,
+                slice_pushdown,
+                schema,
+                validate_output_schema,
+            )
         )
 
     def interpolate(self: LDF) -> LDF:

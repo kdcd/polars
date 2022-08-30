@@ -196,7 +196,8 @@ def test_read_csv_columns_argument(
 
 
 def test_read_csv_buffer_ownership() -> None:
-    buf = io.BytesIO(b"\xf0\x9f\x98\x80,5.55,333\n\xf0\x9f\x98\x86,-5.0,666")
+    bts = b"\xf0\x9f\x98\x80,5.55,333\n\xf0\x9f\x98\x86,-5.0,666"
+    buf = io.BytesIO(bts)
     df = pl.read_csv(
         buf,
         has_header=False,
@@ -206,6 +207,35 @@ def test_read_csv_buffer_ownership() -> None:
     assert df.shape == (2, 3)
     assert df.rows() == [("😀", 5.55, 333), ("😆", -5.0, 666)]
     assert not buf.closed
+    assert buf.read() == bts
+
+
+def test_read_csv_encoding() -> None:
+    bts = (
+        b"Value1,Value2,Value3,Value4,Region\n"
+        b"-30,7.5,2578,1,\xa5x\xa5_\n-32,7.97,3006,1,\xa5x\xa4\xa4\n"
+        b"-31,8,3242,2,\xb7s\xa6\xcb\n-33,7.97,3300,3,\xb0\xaa\xb6\xaf\n"
+        b"-20,7.91,3384,4,\xac\xfc\xb0\xea\n"
+    )
+
+    file_path = os.path.join(os.path.dirname(__file__), "encoding.csv")
+    file_str = str(file_path)
+
+    with open(file_path, "wb") as f:
+        f.write(bts)
+
+    bytesio = io.BytesIO(bts)
+
+    for use_pyarrow in (False, True):
+        for file in (file_path, file_str, bts, bytesio):
+            print(type(file))
+            assert pl.read_csv(
+                file,  # type: ignore[arg-type]
+                encoding="big5",
+                use_pyarrow=use_pyarrow,
+            ).get_column("Region") == pl.Series(
+                "Region", ["台北", "台中", "新竹", "高雄", "美國"]
+            )
 
 
 def test_column_rename_and_dtype_overwrite() -> None:
@@ -313,23 +343,62 @@ def test_empty_bytes() -> None:
         pl.read_csv(b)
 
 
-def test_csq_quote_char() -> None:
+def test_csv_quote_char() -> None:
+    expected = pl.DataFrame(
+        [
+            pl.Series("linenum", [1, 2, 3, 4, 5, 6, 7, 8, 9]),
+            pl.Series(
+                "last_name",
+                [
+                    "Jagger",
+                    'O"Brian',
+                    "Richards",
+                    'L"Etoile',
+                    "Watts",
+                    "Smith",
+                    '"Wyman"',
+                    "Woods",
+                    'J"o"ne"s',
+                ],
+            ),
+            pl.Series(
+                "first_name",
+                [
+                    "Mick",
+                    '"Mary"',
+                    "Keith",
+                    "Bennet",
+                    "Charlie",
+                    'D"Shawn',
+                    "Bill",
+                    "Ron",
+                    "Brian",
+                ],
+            ),
+        ]
+    )
+
     rolling_stones = textwrap.dedent(
         """\
         linenum,last_name,first_name
         1,Jagger,Mick
-        2,O"Brian,Mary
+        2,O"Brian,"Mary"
         3,Richards,Keith
         4,L"Etoile,Bennet
         5,Watts,Charlie
         6,Smith,D"Shawn
-        7,Wyman,Bill
+        7,"Wyman",Bill
         8,Woods,Ron
-        9,Jones,Brian
+        9,J"o"ne"s,Brian
         """
     )
 
-    assert pl.read_csv(rolling_stones.encode(), quote_char=None).shape == (9, 3)
+    for use_pyarrow in (False, True):
+        out = pl.read_csv(
+            rolling_stones.encode(), quote_char=None, use_pyarrow=use_pyarrow
+        )
+        assert out.shape == (9, 3)
+        out.frame_equal(expected)
 
 
 def test_csv_empty_quotes_char() -> None:
@@ -661,3 +730,31 @@ def test_time_format(fmt: str, expected: str) -> None:
     df = pl.DataFrame({"dt": [time(16, 15, 30)]})
     csv = df.write_csv(time_format=fmt)
     assert csv == expected
+
+
+@pytest.mark.parametrize("dtype", [pl.Float32, pl.Float64])
+def test_float_precision(dtype: pl.Float32 | pl.Float64) -> None:
+    df = pl.Series("col", [1.0, 2.2, 3.33], dtype=dtype).to_frame()
+
+    assert df.write_csv(float_precision=None) == "col\n1.0\n2.2\n3.33\n"
+    assert df.write_csv(float_precision=0) == "col\n1\n2\n3\n"
+    assert df.write_csv(float_precision=1) == "col\n1.0\n2.2\n3.3\n"
+    assert df.write_csv(float_precision=2) == "col\n1.00\n2.20\n3.33\n"
+    assert df.write_csv(float_precision=3) == "col\n1.000\n2.200\n3.330\n"
+
+
+def test_skip_rows_different_field_len() -> None:
+    csv = io.StringIO(
+        textwrap.dedent(
+            """a,b
+        1,A
+        2,
+        3,B
+        4,
+        """
+        )
+    )
+    assert pl.read_csv(csv, skip_rows_after_header=2).to_dict(False) == {
+        "a": [3, 4],
+        "b": ["B", None],
+    }

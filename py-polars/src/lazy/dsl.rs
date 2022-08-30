@@ -24,19 +24,6 @@ pub struct PyExpr {
     pub inner: dsl::Expr,
 }
 
-pub(crate) trait ToExprs {
-    fn to_exprs(self) -> Vec<Expr>;
-}
-
-impl ToExprs for Vec<PyExpr> {
-    fn to_exprs(self) -> Vec<Expr> {
-        // Safety
-        // repr is transparent
-        // and has only got one inner field`
-        unsafe { std::mem::transmute(self) }
-    }
-}
-
 #[pymethods]
 impl PyExpr {
     fn __richcmp__(&self, other: Self, op: CompareOp) -> PyExpr {
@@ -223,14 +210,31 @@ impl PyExpr {
             .into()
     }
 
-    pub fn arg_sort(&self, reverse: bool) -> PyExpr {
-        self.clone().inner.arg_sort(reverse).into()
+    pub fn arg_sort(&self, reverse: bool, nulls_last: bool) -> PyExpr {
+        self.clone()
+            .inner
+            .arg_sort(SortOptions {
+                descending: reverse,
+                nulls_last,
+            })
+            .into()
     }
+
+    #[cfg(feature = "top_k")]
+    pub fn top_k(&self, k: usize, reverse: bool) -> PyExpr {
+        self.inner.clone().top_k(k, reverse).into()
+    }
+
     pub fn arg_max(&self) -> PyExpr {
         self.clone().inner.arg_max().into()
     }
     pub fn arg_min(&self) -> PyExpr {
         self.clone().inner.arg_min().into()
+    }
+
+    #[cfg(feature = "search_sorted")]
+    pub fn search_sorted(&self, element: PyExpr) -> PyExpr {
+        self.inner.clone().search_sorted(element.inner).into()
     }
     pub fn take(&self, idx: PyExpr) -> PyExpr {
         self.clone().inner.take(idx.inner).into()
@@ -355,8 +359,20 @@ impl PyExpr {
         self.clone().inner.ceil().into()
     }
 
-    pub fn clip(&self, min: f64, max: f64) -> PyExpr {
+    pub fn clip(&self, py: Python, min: PyObject, max: PyObject) -> PyExpr {
+        let min = min.extract::<Wrap<AnyValue>>(py).unwrap().0;
+        let max = max.extract::<Wrap<AnyValue>>(py).unwrap().0;
         self.clone().inner.clip(min, max).into()
+    }
+
+    pub fn clip_min(&self, py: Python, min: PyObject) -> PyExpr {
+        let min = min.extract::<Wrap<AnyValue>>(py).unwrap().0;
+        self.clone().inner.clip_min(min).into()
+    }
+
+    pub fn clip_max(&self, py: Python, max: PyObject) -> PyExpr {
+        let max = max.extract::<Wrap<AnyValue>>(py).unwrap().0;
+        self.clone().inner.clip_max(max).into()
     }
 
     pub fn abs(&self) -> PyExpr {
@@ -561,18 +577,6 @@ impl PyExpr {
             .into()
     }
 
-    pub fn str_to_uppercase(&self) -> PyExpr {
-        let function = |s: Series| {
-            let ca = s.utf8()?;
-            Ok(ca.to_uppercase().into_series())
-        };
-        self.clone()
-            .inner
-            .map(function, GetOutput::from_type(DataType::UInt32))
-            .with_fmt("str.to_uppercase")
-            .into()
-    }
-
     pub fn str_slice(&self, start: i64, length: Option<u64>) -> PyExpr {
         let function = move |s: Series| {
             let ca = s.utf8()?;
@@ -585,16 +589,12 @@ impl PyExpr {
             .into()
     }
 
+    pub fn str_to_uppercase(&self) -> PyExpr {
+        self.inner.clone().str().to_uppercase().into()
+    }
+
     pub fn str_to_lowercase(&self) -> PyExpr {
-        let function = |s: Series| {
-            let ca = s.utf8()?;
-            Ok(ca.to_lowercase().into_series())
-        };
-        self.clone()
-            .inner
-            .map(function, GetOutput::from_type(DataType::UInt32))
-            .with_fmt("str.to_lowercase")
-            .into()
+        self.inner.clone().str().to_lowercase().into()
     }
 
     pub fn str_lengths(&self) -> PyExpr {
@@ -609,41 +609,19 @@ impl PyExpr {
             .into()
     }
 
-    pub fn str_replace(&self, pat: String, val: String, literal: Option<bool>) -> PyExpr {
-        let function = move |s: Series| {
-            let ca = s.utf8()?;
-            let replaced = match literal {
-                Some(true) => ca.replace_literal(&pat, &val),
-                _ => ca.replace(&pat, &val),
-            };
-            match replaced {
-                Ok(ca) => Ok(ca.into_series()),
-                Err(e) => Err(PolarsError::ComputeError(format!("{:?}", e).into())),
-            }
-        };
-        self.clone()
-            .inner
-            .map(function, GetOutput::same_type())
-            .with_fmt("str.replace")
+    pub fn str_replace(&self, pat: PyExpr, val: PyExpr, literal: bool) -> PyExpr {
+        self.inner
+            .clone()
+            .str()
+            .replace(pat.inner, val.inner, literal)
             .into()
     }
 
-    pub fn str_replace_all(&self, pat: String, val: String, literal: Option<bool>) -> PyExpr {
-        let function = move |s: Series| {
-            let ca = s.utf8()?;
-            let replaced = match literal {
-                Some(true) => ca.replace_literal_all(&pat, &val),
-                _ => ca.replace_all(&pat, &val),
-            };
-            match replaced {
-                Ok(ca) => Ok(ca.into_series()),
-                Err(e) => Err(PolarsError::ComputeError(format!("{:?}", e).into())),
-            }
-        };
-        self.clone()
-            .inner
-            .map(function, GetOutput::same_type())
-            .with_fmt("str.replace_all")
+    pub fn str_replace_all(&self, pat: PyExpr, val: PyExpr, literal: bool) -> PyExpr {
+        self.inner
+            .clone()
+            .str()
+            .replace_all(pat.inner, val.inner, literal)
             .into()
     }
 
@@ -715,6 +693,7 @@ impl PyExpr {
             .with_fmt("str.base64_decode")
             .into()
     }
+    #[cfg(feature = "extract_jsonpath")]
     pub fn str_json_path_match(&self, pat: String) -> PyExpr {
         let function = move |s: Series| {
             let ca = s.utf8()?;
@@ -759,10 +738,15 @@ impl PyExpr {
         self.inner.clone().str().split_exact_inclusive(by, n).into()
     }
 
+    pub fn str_splitn(&self, by: &str, n: usize) -> PyExpr {
+        self.inner.clone().str().splitn(by, n).into()
+    }
+
     pub fn arr_lengths(&self) -> PyExpr {
         self.inner.clone().arr().lengths().into()
     }
 
+    #[cfg(feature = "is_in")]
     pub fn arr_contains(&self, other: PyExpr) -> PyExpr {
         self.inner.clone().arr().contains(other.inner).into()
     }
@@ -818,7 +802,6 @@ impl PyExpr {
             )
             .into()
     }
-
     pub fn duration_minutes(&self) -> PyExpr {
         self.inner
             .clone()
@@ -828,7 +811,6 @@ impl PyExpr {
             )
             .into()
     }
-
     pub fn duration_seconds(&self) -> PyExpr {
         self.inner
             .clone()
@@ -843,6 +825,15 @@ impl PyExpr {
             .clone()
             .map(
                 |s| Ok(s.duration()?.nanoseconds().into_series()),
+                GetOutput::from_type(DataType::Int64),
+            )
+            .into()
+    }
+    pub fn duration_microseconds(&self) -> PyExpr {
+        self.inner
+            .clone()
+            .map(
+                |s| Ok(s.duration()?.microseconds().into_series()),
                 GetOutput::from_type(DataType::Int64),
             )
             .into()
@@ -906,113 +897,112 @@ impl PyExpr {
         let pypolars = PyModule::import(py, "polars").unwrap().to_object(py);
 
         let function = move |s: &Series| {
-            let gil = Python::acquire_gil();
-            let py = gil.python();
+            Python::with_gil(|py| {
+                let out = call_lambda_with_series(py, s.clone(), &lambda, &pypolars)
+                    .expect("python function failed");
+                match out.getattr(py, "_s") {
+                    Ok(pyseries) => {
+                        let pyseries = pyseries.extract::<PySeries>(py).unwrap();
+                        pyseries.series
+                    }
+                    Err(_) => {
+                        let obj = out;
+                        let is_float = obj.as_ref(py).is_instance_of::<PyFloat>().unwrap();
 
-            let out = call_lambda_with_series(py, s.clone(), &lambda, &pypolars)
-                .expect("python function failed");
-            match out.getattr(py, "_s") {
-                Ok(pyseries) => {
-                    let pyseries = pyseries.extract::<PySeries>(py).unwrap();
-                    pyseries.series
-                }
-                Err(_) => {
-                    let obj = out;
-                    let is_float = obj.as_ref(py).is_instance_of::<PyFloat>().unwrap();
+                        let dtype = s.dtype();
 
-                    let dtype = s.dtype();
+                        use DataType::*;
+                        let result = match dtype {
+                            UInt8 => {
+                                if is_float {
+                                    let v = obj.extract::<f64>(py).unwrap();
+                                    Ok(UInt8Chunked::from_slice("", &[v as u8]).into_series())
+                                } else {
+                                    obj.extract::<u8>(py)
+                                        .map(|v| UInt8Chunked::from_slice("", &[v]).into_series())
+                                }
+                            }
+                            UInt16 => {
+                                if is_float {
+                                    let v = obj.extract::<f64>(py).unwrap();
+                                    Ok(UInt16Chunked::from_slice("", &[v as u16]).into_series())
+                                } else {
+                                    obj.extract::<u16>(py)
+                                        .map(|v| UInt16Chunked::from_slice("", &[v]).into_series())
+                                }
+                            }
+                            UInt32 => {
+                                if is_float {
+                                    let v = obj.extract::<f64>(py).unwrap();
+                                    Ok(UInt32Chunked::from_slice("", &[v as u32]).into_series())
+                                } else {
+                                    obj.extract::<u32>(py)
+                                        .map(|v| UInt32Chunked::from_slice("", &[v]).into_series())
+                                }
+                            }
+                            UInt64 => {
+                                if is_float {
+                                    let v = obj.extract::<f64>(py).unwrap();
+                                    Ok(UInt64Chunked::from_slice("", &[v as u64]).into_series())
+                                } else {
+                                    obj.extract::<u64>(py)
+                                        .map(|v| UInt64Chunked::from_slice("", &[v]).into_series())
+                                }
+                            }
+                            Int8 => {
+                                if is_float {
+                                    let v = obj.extract::<f64>(py).unwrap();
+                                    Ok(Int8Chunked::from_slice("", &[v as i8]).into_series())
+                                } else {
+                                    obj.extract::<i8>(py)
+                                        .map(|v| Int8Chunked::from_slice("", &[v]).into_series())
+                                }
+                            }
+                            Int16 => {
+                                if is_float {
+                                    let v = obj.extract::<f64>(py).unwrap();
+                                    Ok(Int16Chunked::from_slice("", &[v as i16]).into_series())
+                                } else {
+                                    obj.extract::<i16>(py)
+                                        .map(|v| Int16Chunked::from_slice("", &[v]).into_series())
+                                }
+                            }
+                            Int32 => {
+                                if is_float {
+                                    let v = obj.extract::<f64>(py).unwrap();
+                                    Ok(Int32Chunked::from_slice("", &[v as i32]).into_series())
+                                } else {
+                                    obj.extract::<i32>(py)
+                                        .map(|v| Int32Chunked::from_slice("", &[v]).into_series())
+                                }
+                            }
+                            Int64 => {
+                                if is_float {
+                                    let v = obj.extract::<f64>(py).unwrap();
+                                    Ok(Int64Chunked::from_slice("", &[v as i64]).into_series())
+                                } else {
+                                    obj.extract::<i64>(py)
+                                        .map(|v| Int64Chunked::from_slice("", &[v]).into_series())
+                                }
+                            }
+                            Float32 => obj
+                                .extract::<f32>(py)
+                                .map(|v| Float32Chunked::from_slice("", &[v]).into_series()),
+                            Float64 => obj
+                                .extract::<f64>(py)
+                                .map(|v| Float64Chunked::from_slice("", &[v]).into_series()),
+                            dt => panic!("{:?} not implemented", dt),
+                        };
 
-                    use DataType::*;
-                    let result = match dtype {
-                        UInt8 => {
-                            if is_float {
-                                let v = obj.extract::<f64>(py).unwrap();
-                                Ok(UInt8Chunked::from_slice("", &[v as u8]).into_series())
-                            } else {
-                                obj.extract::<u8>(py)
-                                    .map(|v| UInt8Chunked::from_slice("", &[v]).into_series())
+                        match result {
+                            Ok(s) => s,
+                            Err(e) => {
+                                panic!("{:?}", e)
                             }
-                        }
-                        UInt16 => {
-                            if is_float {
-                                let v = obj.extract::<f64>(py).unwrap();
-                                Ok(UInt16Chunked::from_slice("", &[v as u16]).into_series())
-                            } else {
-                                obj.extract::<u16>(py)
-                                    .map(|v| UInt16Chunked::from_slice("", &[v]).into_series())
-                            }
-                        }
-                        UInt32 => {
-                            if is_float {
-                                let v = obj.extract::<f64>(py).unwrap();
-                                Ok(UInt32Chunked::from_slice("", &[v as u32]).into_series())
-                            } else {
-                                obj.extract::<u32>(py)
-                                    .map(|v| UInt32Chunked::from_slice("", &[v]).into_series())
-                            }
-                        }
-                        UInt64 => {
-                            if is_float {
-                                let v = obj.extract::<f64>(py).unwrap();
-                                Ok(UInt64Chunked::from_slice("", &[v as u64]).into_series())
-                            } else {
-                                obj.extract::<u64>(py)
-                                    .map(|v| UInt64Chunked::from_slice("", &[v]).into_series())
-                            }
-                        }
-                        Int8 => {
-                            if is_float {
-                                let v = obj.extract::<f64>(py).unwrap();
-                                Ok(Int8Chunked::from_slice("", &[v as i8]).into_series())
-                            } else {
-                                obj.extract::<i8>(py)
-                                    .map(|v| Int8Chunked::from_slice("", &[v]).into_series())
-                            }
-                        }
-                        Int16 => {
-                            if is_float {
-                                let v = obj.extract::<f64>(py).unwrap();
-                                Ok(Int16Chunked::from_slice("", &[v as i16]).into_series())
-                            } else {
-                                obj.extract::<i16>(py)
-                                    .map(|v| Int16Chunked::from_slice("", &[v]).into_series())
-                            }
-                        }
-                        Int32 => {
-                            if is_float {
-                                let v = obj.extract::<f64>(py).unwrap();
-                                Ok(Int32Chunked::from_slice("", &[v as i32]).into_series())
-                            } else {
-                                obj.extract::<i32>(py)
-                                    .map(|v| Int32Chunked::from_slice("", &[v]).into_series())
-                            }
-                        }
-                        Int64 => {
-                            if is_float {
-                                let v = obj.extract::<f64>(py).unwrap();
-                                Ok(Int64Chunked::from_slice("", &[v as i64]).into_series())
-                            } else {
-                                obj.extract::<i64>(py)
-                                    .map(|v| Int64Chunked::from_slice("", &[v]).into_series())
-                            }
-                        }
-                        Float32 => obj
-                            .extract::<f32>(py)
-                            .map(|v| Float32Chunked::from_slice("", &[v]).into_series()),
-                        Float64 => obj
-                            .extract::<f64>(py)
-                            .map(|v| Float64Chunked::from_slice("", &[v]).into_series()),
-                        dt => panic!("{:?} not implemented", dt),
-                    };
-
-                    match result {
-                        Ok(s) => s,
-                        Err(e) => {
-                            panic!("{:?}", e)
                         }
                     }
                 }
-            }
+            })
         };
         self.clone()
             .inner
@@ -1057,9 +1047,7 @@ impl PyExpr {
         self.inner
             .clone()
             .map_alias(move |name| {
-                let gil = Python::acquire_gil();
-                let py = gil.python();
-                let out = lambda.call1(py, (name,)).unwrap();
+                let out = Python::with_gil(|py| lambda.call1(py, (name,)).unwrap());
                 out.to_string()
             })
             .into()
@@ -1217,6 +1205,7 @@ impl PyExpr {
         self.inner.clone().rolling_median(options).into()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn rolling_quantile(
         &self,
         quantile: f64,
@@ -1327,7 +1316,11 @@ impl PyExpr {
         self.inner.clone().arr().shift(periods).into()
     }
 
-    fn lst_slice(&self, offset: i64, length: usize) -> Self {
+    fn lst_slice(&self, offset: i64, length: Option<usize>) -> Self {
+        let length = match length {
+            Some(i) => i,
+            None => usize::MAX,
+        };
         self.inner.clone().arr().slice(offset, length).into()
     }
 
@@ -1482,10 +1475,10 @@ impl PyExpr {
             .clone()
             .apply(
                 move |s| {
-                    let gil = Python::acquire_gil();
-                    let py = gil.python();
-                    let value = value.extract::<Wrap<AnyValue>>(py).unwrap().0;
-                    s.extend_constant(value, n)
+                    Python::with_gil(|py| {
+                        let value = value.extract::<Wrap<AnyValue>>(py).unwrap().0;
+                        s.extend_constant(value, n)
+                    })
                 },
                 GetOutput::same_type(),
             )
@@ -1502,6 +1495,10 @@ impl PyExpr {
 
     pub fn struct_field_by_name(&self, name: &str) -> PyExpr {
         self.inner.clone().struct_().field_by_name(name).into()
+    }
+
+    pub fn struct_field_by_index(&self, index: i64) -> PyExpr {
+        self.inner.clone().struct_().field_by_index(index).into()
     }
 
     pub fn struct_rename_fields(&self, names: Vec<String>) -> PyExpr {

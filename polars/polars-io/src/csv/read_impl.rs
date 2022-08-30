@@ -325,13 +325,10 @@ impl<'a> CoreReader<'a> {
                     Some(first) if Some(*first) == self.comment_char => {
                         next_line_position_naive(bytes, eol_char)
                     }
-                    _ => next_line_position(
-                        bytes,
-                        self.schema.len(),
-                        self.delimiter,
-                        self.quote_char,
-                        eol_char,
-                    ),
+                    // we don't pass expected fields
+                    // as we want to skip all rows
+                    // no matter the no. of fields
+                    _ => next_line_position(bytes, None, self.delimiter, self.quote_char, eol_char),
                 }
                 .ok_or_else(|| PolarsError::NoData("not enough lines to skip".into()))?;
 
@@ -363,7 +360,14 @@ impl<'a> CoreReader<'a> {
         let mut total_rows = 128;
 
         // if None, there are less then 128 rows in the file and the statistics don't matter that much
-        if let Some((mean, std)) = get_line_stats(bytes, self.sample_size, self.eol_char) {
+        if let Some((mean, std)) = get_line_stats(
+            bytes,
+            self.sample_size,
+            self.eol_char,
+            self.schema.len(),
+            self.delimiter,
+            self.quote_char,
+        ) {
             if logging {
                 eprintln!("avg line length: {}\nstd. dev. line length: {}", mean, std);
             }
@@ -383,7 +387,7 @@ impl<'a> CoreReader<'a> {
                 if n_bytes < bytes.len() {
                     if let Some(pos) = next_line_position(
                         &bytes[n_bytes..],
-                        self.schema.len(),
+                        Some(self.schema.len()),
                         self.delimiter,
                         self.quote_char,
                         self.eol_char,

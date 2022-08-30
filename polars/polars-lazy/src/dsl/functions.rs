@@ -9,15 +9,14 @@ use polars_core::prelude::*;
 use polars_core::utils::arrow::temporal_conversions::SECONDS_IN_DAY;
 #[cfg(feature = "rank")]
 use polars_core::utils::coalesce_nulls_series;
-use polars_core::utils::get_supertype;
-#[cfg(feature = "list")]
-use polars_ops::prelude::ListNameSpaceImpl;
 use rayon::prelude::*;
 
 #[cfg(feature = "arg_where")]
 use crate::dsl::function_expr::FunctionExpr;
+#[cfg(feature = "list")]
+use crate::dsl::function_expr::ListFunction;
+use crate::dsl::*;
 use crate::prelude::*;
-use crate::utils::has_wildcard;
 
 /// Compute the covariance between two columns.
 pub fn cov(a: Expr, b: Expr) -> Expr {
@@ -219,8 +218,8 @@ pub fn argsort_by<E: AsRef<[Expr]>>(by: E, reverse: &[bool]) -> Expr {
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
             input_wildcard_expansion: true,
-            auto_explode: false,
             fmt_str: "argsort_by",
+            ..Default::default()
         },
     }
 }
@@ -243,6 +242,7 @@ pub fn concat_str<E: AsRef<[Expr]>>(s: E, sep: &str) -> Expr {
             input_wildcard_expansion: true,
             auto_explode: true,
             fmt_str: "concat_by",
+            ..Default::default()
         },
     }
 }
@@ -253,44 +253,14 @@ pub fn concat_str<E: AsRef<[Expr]>>(s: E, sep: &str) -> Expr {
 pub fn concat_lst<E: AsRef<[IE]>, IE: Into<Expr> + Clone>(s: E) -> Expr {
     let s = s.as_ref().iter().map(|e| e.clone().into()).collect();
 
-    let function = SpecialEq::new(Arc::new(move |s: &mut [Series]| {
-        let mut first = std::mem::take(&mut s[0]);
-        let other = &s[1..];
-
-        let first_ca = match first.list().ok() {
-            Some(ca) => ca,
-            None => {
-                first = first.reshape(&[-1, 1]).unwrap();
-                first.list().unwrap()
-            }
-        };
-        first_ca.lst_concat(other).map(|ca| ca.into_series())
-    }) as Arc<dyn SeriesUdf>);
-    Expr::AnonymousFunction {
+    Expr::Function {
         input: s,
-        function,
-        output_type: GetOutput::map_dtypes(|dts| {
-            let mut super_type_inner = None;
-
-            for dt in dts {
-                match dt {
-                    DataType::List(inner) => match super_type_inner {
-                        None => super_type_inner = Some(*inner.clone()),
-                        Some(st_inner) => super_type_inner = get_supertype(&st_inner, inner).ok(),
-                    },
-                    dt => match super_type_inner {
-                        None => super_type_inner = Some((*dt).clone()),
-                        Some(st_inner) => super_type_inner = get_supertype(&st_inner, dt).ok(),
-                    },
-                }
-            }
-            DataType::List(Box::new(super_type_inner.unwrap()))
-        }),
+        function: FunctionExpr::ListExpr(ListFunction::Concat),
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyFlat,
             input_wildcard_expansion: true,
-            auto_explode: false,
             fmt_str: "concat_list",
+            ..Default::default()
         },
     }
 }
@@ -476,8 +446,8 @@ pub fn datetime(args: DatetimeArgs) -> Expr {
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyFlat,
             input_wildcard_expansion: true,
-            auto_explode: false,
             fmt_str: "datetime",
+            ..Default::default()
         },
     }
     .alias("datetime")
@@ -553,8 +523,8 @@ pub fn duration(args: DurationArgs) -> Expr {
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyFlat,
             input_wildcard_expansion: true,
-            auto_explode: false,
             fmt_str: "duration",
+            ..Default::default()
         },
     }
     .alias("duration")
@@ -727,46 +697,34 @@ where
 }
 
 /// Accumulate over multiple columns horizontally / row wise.
-pub fn fold_exprs<F: 'static, E: AsRef<[Expr]>>(mut acc: Expr, f: F, exprs: E) -> Expr
+pub fn fold_exprs<F: 'static, E: AsRef<[Expr]>>(acc: Expr, f: F, exprs: E) -> Expr
 where
     F: Fn(Series, Series) -> Result<Series> + Send + Sync + Clone,
 {
     let mut exprs = exprs.as_ref().to_vec();
-    if exprs.iter().any(|e| has_wildcard(e) | has_regex(e)) {
-        exprs.push(acc);
+    exprs.push(acc);
 
-        let function = SpecialEq::new(Arc::new(move |series: &mut [Series]| {
-            let mut series = series.to_vec();
-            let mut acc = series.pop().unwrap();
+    let function = SpecialEq::new(Arc::new(move |series: &mut [Series]| {
+        let mut series = series.to_vec();
+        let mut acc = series.pop().unwrap();
 
-            for s in series {
-                acc = f(acc, s)?;
-            }
-            Ok(acc)
-        }) as Arc<dyn SeriesUdf>);
-
-        // Todo! make sure that output type is correct
-        Expr::AnonymousFunction {
-            input: exprs,
-            function,
-            output_type: GetOutput::same_type(),
-            options: FunctionOptions {
-                collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: true,
-                auto_explode: true,
-                fmt_str: "",
-            },
+        for s in series {
+            acc = f(acc, s)?;
         }
-    } else {
-        for e in exprs {
-            acc = map_binary(
-                acc,
-                e,
-                f.clone(),
-                GetOutput::map_dtypes(|dt| get_supertype(dt[0], dt[1]).unwrap()),
-            );
-        }
-        acc
+        Ok(acc)
+    }) as Arc<dyn SeriesUdf>);
+
+    Expr::AnonymousFunction {
+        input: exprs,
+        function,
+        output_type: GetOutput::super_type(),
+        options: FunctionOptions {
+            collect_groups: ApplyOptions::ApplyGroups,
+            input_wildcard_expansion: true,
+            auto_explode: true,
+            fmt_str: "fold",
+            ..Default::default()
+        },
     }
 }
 
@@ -927,9 +885,8 @@ pub fn arg_where<E: Into<Expr>>(condition: E) -> Expr {
         function: FunctionExpr::ArgWhere,
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
-            input_wildcard_expansion: false,
-            auto_explode: false,
             fmt_str: "arg_where",
+            ..Default::default()
         },
     }
 }

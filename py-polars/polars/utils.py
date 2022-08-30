@@ -1,14 +1,13 @@
 """Utility functions."""
 from __future__ import annotations
 
-import ctypes
 import functools
 import os
 import sys
 import warnings
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence, TypeVar
+from typing import TYPE_CHECKING, Callable, Iterable, Sequence, TypeVar
 
 import polars.internals as pli
 from polars.datatypes import DataType, Date, Datetime
@@ -21,20 +20,13 @@ try:
 except ImportError:
     _DOCUMENTING = True
 
-try:
-    import numpy as np
-
-    _NUMPY_AVAILABLE = True
-except ImportError:
-    _NUMPY_AVAILABLE = False
-
 if sys.version_info >= (3, 10):
     from typing import ParamSpec, TypeGuard
 else:
     from typing_extensions import ParamSpec, TypeGuard
 
 if TYPE_CHECKING:
-    from polars.internals.type_aliases import TimeUnit
+    from polars.internals.type_aliases import SizeUnit, TimeUnit
 
 
 def _process_null_values(
@@ -46,44 +38,8 @@ def _process_null_values(
         return null_values
 
 
-# https://stackoverflow.com/questions/4355524/getting-data-from-ctypes-array-into-numpy
-def _ptr_to_numpy(ptr: int, len: int, ptr_type: Any) -> np.ndarray[Any, Any]:
-    """
-    Create a memory block view as a numpy array.
-
-    Parameters
-    ----------
-    ptr
-        C/Rust ptr casted to usize.
-    len
-        Length of the array values.
-    ptr_type
-        Example:
-            f32: ctypes.c_float)
-
-    Returns
-    -------
-    View of memory block as numpy array.
-
-    """
-    if not _NUMPY_AVAILABLE:
-        raise ImportError("'numpy' is required for this functionality.")
-    ptr_ctype = ctypes.cast(ptr, ctypes.POINTER(ptr_type))
-    return np.ctypeslib.as_array(ptr_ctype, (len,))
-
-
 def _timedelta_to_pl_duration(td: timedelta) -> str:
     return f"{td.days}d{td.seconds}s{td.microseconds}us"
-
-
-def in_nanoseconds_window(dt: datetime) -> bool:
-    """Check whether the given datetime can be represented as a Unix timestamp."""
-    return 1386 < dt.year < 2554
-
-
-def timedelta_in_nanoseconds_window(td: timedelta) -> bool:
-    """Check whether the given timedelta can be represented as a Unix timestamp."""
-    return in_nanoseconds_window(datetime(1970, 1, 1) + td)
 
 
 def _datetime_to_pl_timestamp(dt: datetime, tu: TimeUnit | None) -> int:
@@ -344,3 +300,17 @@ def _rename_kwargs(
                 stacklevel=3,
             )
             kwargs[new] = kwargs.pop(alias)
+
+
+def scale_bytes(sz: int, to: SizeUnit) -> int | float:
+    """Scale size in bytes to other size units (eg: "kb", "mb", "gb", "tb")."""
+    scaling_factor = {
+        "b": 1,
+        "k": 1024,
+        "m": 1024**2,
+        "g": 1024**3,
+        "t": 1024**4,
+    }[to[0]]
+    if scaling_factor > 1:
+        return sz / scaling_factor
+    return sz

@@ -327,6 +327,62 @@ macro_rules! downcast_as_macro_arg_physical {
     }};
 }
 
+/// Apply a macro on the Downcasted ChunkedArray's of DataTypes that are logical numerics.
+/// So no logical.
+#[macro_export]
+macro_rules! downcast_as_macro_arg_physical_mut {
+    ($self:expr, $macro:ident $(, $opt_args:expr)*) => {{
+        // clone so that we do not borrow
+        match $self.dtype().clone() {
+            #[cfg(feature = "dtype-u8")]
+            DataType::UInt8 => {
+                let ca: &mut UInt8Chunked = $self.as_mut();
+                $macro!(UInt8Type, ca $(, $opt_args)*)
+            },
+            #[cfg(feature = "dtype-u16")]
+            DataType::UInt16 => {
+                let ca: &mut UInt16Chunked = $self.as_mut();
+                $macro!(UInt16Type, ca $(, $opt_args)*)
+            },
+            DataType::UInt32 => {
+                let ca: &mut UInt32Chunked = $self.as_mut();
+                $macro!(UInt32Type, ca $(, $opt_args)*)
+            },
+            DataType::UInt64 => {
+                let ca: &mut UInt64Chunked = $self.as_mut();
+                $macro!(UInt64Type, ca $(, $opt_args)*)
+            },
+            #[cfg(feature = "dtype-i8")]
+            DataType::Int8 => {
+                let ca: &mut Int8Chunked = $self.as_mut();
+                $macro!(Int8Type, ca $(, $opt_args)*)
+            },
+            #[cfg(feature = "dtype-i16")]
+            DataType::Int16 => {
+                let ca: &mut Int16Chunked = $self.as_mut();
+                $macro!(Int16Type, ca $(, $opt_args)*)
+            },
+            DataType::Int32 => {
+                let ca: &mut Int32Chunked = $self.as_mut();
+                $macro!(Int32Type, ca $(, $opt_args)*)
+            },
+            DataType::Int64 => {
+                let ca: &mut Int64Chunked = $self.as_mut();
+                $macro!(Int64Type, ca $(, $opt_args)*)
+            },
+            DataType::Float32 => {
+                let ca: &mut Float32Chunked = $self.as_mut();
+                $macro!(Float32Type, ca $(, $opt_args)*)
+            },
+            DataType::Float64 => {
+                let ca: &mut Float64Chunked = $self.as_mut();
+                $macro!(Float64Type, ca $(, $opt_args)*)
+            },
+            dt => panic!("not implemented for {:?}", dt),
+        }
+    }};
+}
+
 #[macro_export]
 macro_rules! apply_method_all_arrow_series {
     ($self:expr, $method:ident, $($args:expr),*) => {
@@ -633,9 +689,7 @@ fn _get_supertype(l: &DataType, r: &DataType) -> Option<DataType> {
                 Some(Datetime(get_time_units(lu, ru), None))
             }
             #[cfg(all(feature = "dtype-duration", feature = "dtype-date"))]
-            (Duration(_), Date) | (Date, Duration(_)) => {
-                Some(Datetime(TimeUnit::Milliseconds, None))
-            }
+            (Duration(_), Date) | (Date, Duration(_)) => Some(Date),
             #[cfg(feature = "dtype-duration")]
             (Duration(lu), Duration(ru)) => Some(Duration(get_time_units(lu, ru))),
 
@@ -656,6 +710,11 @@ fn _get_supertype(l: &DataType, r: &DataType) -> Option<DataType> {
                 let tu = get_time_units(tu_l, tu_r);
                 Some(Datetime(tu, tz_r.clone()))
             }
+            (List(inner_left), List(inner_right)) => {
+                let st = _get_supertype(inner_left, inner_right)?;
+                Some(DataType::List(Box::new(st)))
+            }
+            // todo! check if can be removed
             (List(inner), other) | (other, List(inner)) => {
                 let st = _get_supertype(inner, other)?;
                 Some(DataType::List(Box::new(st)))

@@ -10,7 +10,7 @@ import pyarrow as pa
 import pytest
 
 import polars as pl
-from polars.datatypes import Date, Float64, Int32, Int64, UInt32, UInt64
+from polars.datatypes import Date, Datetime, Float64, Int32, Int64, UInt32, UInt64
 from polars.testing import assert_series_equal, verify_series_and_expr_api
 
 
@@ -36,6 +36,13 @@ def test_init_inputs(monkeypatch: Any) -> None:
         assert pl.Series(values=[1, 2]).dtype == pl.Int64
         assert pl.Series("a").dtype == pl.Float32  # f32 type used in case of no data
         assert pl.Series().dtype == pl.Float32
+        assert pl.Series([]).dtype == pl.Float32
+        assert pl.Series(dtype_if_empty=pl.Utf8).dtype == pl.Utf8
+        assert pl.Series([], dtype_if_empty=pl.UInt16).dtype == pl.UInt16
+        # "== []" will be cast to empty Series with Utf8 dtype.
+        pl.testing.assert_series_equal(
+            pl.Series([], dtype_if_empty=pl.Utf8) == [], pl.Series("", dtype=pl.Boolean)
+        )
         assert pl.Series(values=[True, False]).dtype == pl.Boolean
         assert pl.Series(values=np.array([True, False])).dtype == pl.Boolean
         assert pl.Series(values=np.array(["foo", "bar"])).dtype == pl.Utf8
@@ -45,6 +52,7 @@ def test_init_inputs(monkeypatch: Any) -> None:
             == pl.List
         )
         assert pl.Series("a", [10000, 20000, 30000], dtype=pl.Time).dtype == pl.Time
+
         # 2d numpy array
         res = pl.Series(name="a", values=np.array([[1, 2], [3, 4]]))
         assert all(res[0] == np.array([1, 2]))
@@ -56,6 +64,21 @@ def test_init_inputs(monkeypatch: Any) -> None:
 
         # lists
         assert pl.Series("a", [[1, 2], [3, 4]]).dtype == pl.List
+
+    # datetime64: check timeunit (auto-detect, implicit/explicit) and NaT
+    d64 = pd.date_range(date(2021, 8, 1), date(2021, 8, 3)).values
+    d64[1] = None
+
+    expected = [datetime(2021, 8, 1, 0), None, datetime(2021, 8, 3, 0)]
+    for dtype in (None, Datetime, Datetime("ns")):
+        s = pl.Series("dates", d64, dtype)
+        assert s.to_list() == expected
+        assert Datetime == s.dtype
+        assert s.dtype.tu == "ns"  # type: ignore[attr-defined]
+
+    s = pl.Series(values=d64.astype("<M8[ms]"))
+    assert s.dtype.tu == "ms"  # type: ignore[attr-defined]
+    assert expected == s.to_list()
 
     # pandas
     assert pl.Series(pd.Series([1, 2])).dtype == pl.Int64
@@ -251,7 +274,6 @@ def test_append_extend() -> None:
     a.append(b, append_chunks=False)
     expected = pl.Series("a", [1, 2, 8, 9, None])
     assert a.series_equal(expected, null_equal=True)
-    print(a.chunk_lengths())
     assert a.n_chunks() == 1
 
 
@@ -569,6 +591,28 @@ def test_fill_null() -> None:
         a, pl.Series("a", [1, 2, 14], dtype=Int64), "fill_null", 14
     )
 
+    a = pl.Series("a", [0.0, 1.0, None, 2.0, None, 3.0])
+
+    assert a.fill_null(0).to_list() == [0.0, 1.0, 0.0, 2.0, 0.0, 3.0]
+    assert a.fill_null(strategy="zero").to_list() == [0.0, 1.0, 0.0, 2.0, 0.0, 3.0]
+    assert a.fill_null(strategy="max").to_list() == [0.0, 1.0, 3.0, 2.0, 3.0, 3.0]
+    assert a.fill_null(strategy="min").to_list() == [0.0, 1.0, 0.0, 2.0, 0.0, 3.0]
+    assert a.fill_null(strategy="one").to_list() == [0.0, 1.0, 1.0, 2.0, 1.0, 3.0]
+    assert a.fill_null(strategy="forward").to_list() == [0.0, 1.0, 1.0, 2.0, 2.0, 3.0]
+    assert a.fill_null(strategy="backward").to_list() == [0.0, 1.0, 2.0, 2.0, 3.0, 3.0]
+    assert a.fill_null(strategy="mean").to_list() == [0.0, 1.0, 1.5, 2.0, 1.5, 3.0]
+
+
+def test_fill_nan() -> None:
+    nan = float("nan")
+    a = pl.Series("a", [1.0, nan, 2.0, nan, 3.0])
+    assert a.fill_nan(None).series_equal(
+        pl.Series("a", [1.0, None, 2.0, None, 3.0]), null_equal=True
+    )
+    assert a.fill_nan(0).series_equal(
+        pl.Series("a", [1.0, 0.0, 2.0, 0.0, 3.0]), null_equal=True
+    )
+
 
 def test_apply() -> None:
     a = pl.Series("a", [1, 2, None])
@@ -606,6 +650,7 @@ def test_rolling() -> None:
     assert_series_equal(a.rolling_max(2), pl.Series("a", [None, 2, 3, 3, 2]))
     assert_series_equal(a.rolling_sum(2), pl.Series("a", [None, 3, 5, 5, 3]))
     assert_series_equal(a.rolling_mean(2), pl.Series("a", [None, 1.5, 2.5, 2.5, 1.5]))
+
     assert a.rolling_std(2).to_list()[1] == pytest.approx(0.7071067811865476)
     assert a.rolling_var(2).to_list()[1] == pytest.approx(0.5)
     assert_series_equal(
@@ -657,6 +702,11 @@ def test_rolling() -> None:
         .to_list()
         == expected
     )
+
+    nan = float("nan")
+    a = pl.Series("a", [11.0, 2.0, 9.0, nan, 8.0])
+    assert a.rolling_sum(3) == [None, None, 22.0, nan, nan]
+    assert a.rolling_apply(np.nansum, 3) == [None, None, 22.0, 11.0, 17.0]
 
 
 def test_object() -> None:
@@ -767,13 +817,19 @@ def test_describe() -> None:
 
 
 def test_is_in() -> None:
-    s = pl.Series([1, 2, 3])
+    s = pl.Series(["a", "b", "c"])
 
-    out = s.is_in([1, 2])
+    out = s.is_in(["a", "b"])
     assert out == [True, True, False]
-    df = pl.DataFrame({"a": [1.0, 2.0], "b": [1, 4]})
+
+    # Check if empty list is converted to pl.Utf8.
+    out = s.is_in([])
+    assert out == [False, False, False]
+
+    df = pl.DataFrame({"a": [1.0, 2.0], "b": [1, 4], "c": ["e", "d"]})
 
     assert df.select(pl.col("a").is_in(pl.col("b"))).to_series() == [True, False]
+    assert df.select(pl.col("b").is_in([])).to_series() == [False, False]
 
 
 def test_slice() -> None:
@@ -886,7 +942,7 @@ def test_extract_regex() -> None:
     verify_series_and_expr_api(s, expected, "str.extract", r"candidate=(\w+)", 1)
 
 
-def test_rank_dispatch() -> None:
+def test_rank() -> None:
     s = pl.Series("a", [1, 2, 3, 2, 2, 3, 0])
 
     assert_series_equal(
@@ -902,7 +958,7 @@ def test_rank_dispatch() -> None:
     )
 
 
-def test_diff_dispatch() -> None:
+def test_diff() -> None:
     s = pl.Series("a", [1, 2, 3, 2, 2, 3, 0])
     expected = pl.Series("a", [1, 1, -1, 0, 1, -3])
 
@@ -914,13 +970,13 @@ def test_diff_dispatch() -> None:
     )
 
 
-def test_pct_change_dispatch() -> None:
+def test_pct_change() -> None:
     s = pl.Series("a", [1, 2, 4, 8, 16, 32, 64])
     expected = pl.Series("a", [None, None, float("inf"), 3.0, 3.0, 3.0, 3.0])
     verify_series_and_expr_api(s, expected, "pct_change", 2)
 
 
-def test_skew_dispatch() -> None:
+def test_skew() -> None:
     s = pl.Series("a", [1, 2, 3, 2, 2, 3, 0])
 
     assert s.skew(True) == pytest.approx(-0.5953924651018018)
@@ -930,7 +986,7 @@ def test_skew_dispatch() -> None:
     assert np.isclose(df.select(pl.col("a").skew(False))["a"][0], -0.7717168360221258)
 
 
-def test_kurtosis_dispatch() -> None:
+def test_kurtosis() -> None:
     s = pl.Series("a", [1, 2, 3, 2, 2, 3, 0])
     expected = -0.6406250000000004
 
@@ -939,7 +995,7 @@ def test_kurtosis_dispatch() -> None:
     assert np.isclose(df.select(pl.col("a").kurtosis())["a"][0], expected)
 
 
-def test_arr_lengths_dispatch() -> None:
+def test_arr_lengths() -> None:
     s = pl.Series("a", [[1, 2], [1, 2, 3]])
     assert_series_equal(s.arr.lengths(), pl.Series("a", [2, 3], dtype=UInt32))
     df = pl.DataFrame([s])
@@ -970,7 +1026,7 @@ def test_arr_unique() -> None:
     assert sorted(result[1]) == [1, 2]
 
 
-def test_sqrt_dispatch() -> None:
+def test_sqrt() -> None:
     s = pl.Series("a", [1, 2])
     assert_series_equal(s.sqrt(), pl.Series("a", [1.0, np.sqrt(2)]))
     df = pl.DataFrame([s])
@@ -993,7 +1049,7 @@ def test_strict_cast() -> None:
         pl.DataFrame({"a": [2**16]}).select([pl.col("a").cast(pl.Int16, strict=True)])
 
 
-def test_list_concat_dispatch() -> None:
+def test_list_concat() -> None:
     s0 = pl.Series("a", [[1, 2]])
     s1 = pl.Series("b", [[3, 4, 5]])
     expected = pl.Series("a", [[1, 2, 3, 4, 5]])
@@ -1073,11 +1129,38 @@ def test_bitwise() -> None:
 
 
 def test_to_numpy(monkeypatch: Any) -> None:
-    monkeypatch.setattr(pl.internals.series.series, "_PYARROW_AVAILABLE", False)
-    a = pl.Series("a", [1, 2, 3])
-    assert np.all(a.to_numpy() == np.array([1, 2, 3]))
-    a = pl.Series("a", [1, 2, None])
-    np.testing.assert_array_equal(a.to_numpy(), np.array([1.0, 2.0, np.nan]))
+    for writable in [False, True]:
+        for flag in [False, True]:
+            monkeypatch.setattr(pl.internals.series.series, "_PYARROW_AVAILABLE", flag)
+
+            np_array = pl.Series("a", [1, 2, 3], pl.UInt8).to_numpy(writable=writable)
+
+            np.testing.assert_array_equal(np_array, np.array([1, 2, 3], dtype=np.uint8))
+            # Test if numpy array is readonly or writable.
+            assert np_array.flags.writeable == writable
+
+            if writable:
+                np_array[1] += 10
+                np.testing.assert_array_equal(
+                    np_array, np.array([1, 12, 3], dtype=np.uint8)
+                )
+
+            np_array_with_missing_values = pl.Series(
+                "a", [None, 2, 3], pl.UInt8
+            ).to_numpy(writable=writable)
+
+            np.testing.assert_array_equal(
+                np_array_with_missing_values,
+                np.array(
+                    [np.NaN, 2.0, 3.0],
+                    dtype=(np.float64 if flag is True else np.float32),
+                ),
+            )
+
+            if writable:
+                # As Null values can't be encoded natively in a numpy array,
+                # this array will never be a view.
+                assert np_array_with_missing_values.flags.writeable == writable
 
 
 def test_from_sequences(monkeypatch: Any) -> None:
@@ -1619,6 +1702,48 @@ def test_ewm_mean() -> None:
     )
 
 
+def test_ewm_mean_leading_nulls() -> None:
+    for min_periods in [1, 2, 3]:
+        assert (
+            pl.Series([1, 2, 3, 4]).ewm_mean(3, min_periods=min_periods).null_count()
+            == min_periods - 1
+        )
+    assert pl.Series([None, 1.0, 1.0, 1.0]).ewm_mean(
+        alpha=0.5, min_periods=1
+    ).to_list() == [None, 1.0, 1.0, 1.0]
+    assert pl.Series([None, 1.0, 1.0, 1.0]).ewm_mean(
+        alpha=0.5, min_periods=2
+    ).to_list() == [None, None, 1.0, 1.0]
+
+
+def test_ewm_mean_min_periods() -> None:
+    series = pl.Series([1.0, None, None, None])
+
+    ewm_mean = series.ewm_mean(alpha=0.5, min_periods=1)
+    assert ewm_mean.to_list() == [1.0, 1.0, 1.0, 1.0]
+    ewm_mean = series.ewm_mean(alpha=0.5, min_periods=2)
+    assert ewm_mean.to_list() == [None, None, None, None]
+
+    series = pl.Series([1.0, None, 2.0, None, 3.0])
+
+    ewm_mean = series.ewm_mean(alpha=0.5, min_periods=1)
+    assert ewm_mean.to_list() == [
+        1.0,
+        1.0,
+        1.6666666666666667,
+        1.6666666666666667,
+        2.4285714285714284,
+    ]
+    ewm_mean = series.ewm_mean(alpha=0.5, min_periods=2)
+    assert ewm_mean.to_list() == [
+        None,
+        None,
+        1.6666666666666667,
+        1.6666666666666667,
+        2.4285714285714284,
+    ]
+
+
 def test_ewm_std_var() -> None:
     a = pl.Series("a", [2, 5, 3])
 
@@ -1690,8 +1815,11 @@ def test_duration_extract_times() -> None:
     expected = pl.Series("b", [3600 * 24])
     verify_series_and_expr_api(duration, expected, "dt.seconds")
 
-    expected = pl.Series("b", [3600 * 24 * 1000])
+    expected = pl.Series("b", [3600 * 24 * int(1e3)])
     verify_series_and_expr_api(duration, expected, "dt.milliseconds")
+
+    expected = pl.Series("b", [3600 * 24 * int(1e6)])
+    verify_series_and_expr_api(duration, expected, "dt.microseconds")
 
     expected = pl.Series("b", [3600 * 24 * int(1e9)])
     verify_series_and_expr_api(duration, expected, "dt.nanoseconds")
@@ -1769,7 +1897,71 @@ def test_reverse() -> None:
     assert s.reverse().to_list() == ["x", "y", None, "b", "a"]
 
 
+def test_n_unique() -> None:
+    s = pl.Series("s", [11, 11, 11, 22, 22, 33, None, None, None])
+    assert s.n_unique() == 4
+
+
+def test_clip() -> None:
+    s = pl.Series("foo", [-50, 5, None, 50])
+    assert s.clip(1, 10) == [1, 5, None, 10]
+
+
 def test_mutable_borrowed_append_3915() -> None:
     s = pl.Series("s", [1, 2, 3])
     s.append(s)
     assert s.to_list() == [1, 2, 3, 1, 2, 3]
+
+
+def test_set_at_idx() -> None:
+    s = pl.Series("s", [1, 2, 3])
+
+    # no-op (empty sequences)
+    for x in (
+        (),
+        [],
+        pl.Series(),
+        pl.Series(dtype=pl.Int8),
+        np.array([]),
+        np.ndarray(shape=(0, 0)),
+    ):
+        s.set_at_idx(x, 8)  # type: ignore[arg-type]
+        assert s.to_list() == [1, 2, 3]
+
+    # set new values, one index at a time
+    s.set_at_idx(0, 8)
+    s.set_at_idx([1], None)
+    assert s.to_list() == [8, None, 3]
+
+    # set new value at multiple indexes in one go
+    s.set_at_idx([0, 2], None)
+    assert s.to_list() == [None, None, None]
+
+    # try with different series dtype
+    s = pl.Series("s", ["a", "b", "c"])
+    s.set_at_idx((1, 2), "x")
+    assert s.to_list() == ["a", "x", "x"]
+    assert s.set_at_idx([0, 2], 0.12345).to_list() == ["0.12345", "x", "0.12345"]
+
+
+def test_repr() -> None:
+    s = pl.Series("ints", [1001, 2002, 3003])
+    s_repr = repr(s)
+
+    assert "shape: (3,)" in s_repr
+    assert "Series: 'ints' [i64]" in s_repr
+    for n in s.to_list():
+        assert str(n) in s_repr
+
+    class XSeries(pl.Series):
+        """Custom Series class."""
+
+    # check custom class name reflected in repr ouput
+    x = XSeries("ints", [1001, 2002, 3003])
+    x_repr = repr(x)
+
+    assert "shape: (3,)" in x_repr
+    assert "XSeries: 'ints' [i64]" in x_repr
+    assert "1001" in x_repr
+    for n in x.to_list():
+        assert str(n) in x_repr

@@ -5,6 +5,7 @@ use polars_core::prelude::*;
 
 use crate::logical_plan::iterator::{ArenaExprIter, ArenaLpIter};
 use crate::logical_plan::Context;
+use crate::prelude::names::COUNT;
 use crate::prelude::*;
 
 pub(crate) trait PushNode {
@@ -87,20 +88,18 @@ where
 /// Check if root expression is a literal
 #[cfg(feature = "is_in")]
 pub(crate) fn has_root_literal_expr(e: &Expr) -> bool {
-    matches!(e.into_iter().last(), Some(Expr::Literal(_)))
+    match e {
+        Expr::Literal(_) => true,
+        _ => {
+            let roots = expr_to_root_column_exprs(e);
+            roots.iter().any(|e| matches!(e, Expr::Literal(_)))
+        }
+    }
 }
 
 // this one is used so much that it has its own function, to reduce inlining
 pub(crate) fn has_wildcard(current_expr: &Expr) -> bool {
     has_expr(current_expr, |e| matches!(e, Expr::Wildcard))
-}
-
-// this one is used so much that it has its own function, to reduce inlining
-pub(crate) fn has_regex(current_expr: &Expr) -> bool {
-    has_expr(current_expr, |e| match e {
-        Expr::Column(name) => name.starts_with('^') && name.ends_with('$'),
-        _ => false,
-    })
 }
 
 pub(crate) fn has_nth(current_expr: &Expr) -> bool {
@@ -121,12 +120,24 @@ pub(crate) fn expr_output_name(expr: &Expr) -> Result<Arc<str>> {
             Expr::Window { function, .. } => return expr_output_name(function),
             Expr::Column(name) => return Ok(name.clone()),
             Expr::Alias(_, name) => return Ok(name.clone()),
+            Expr::KeepName(_) | Expr::Wildcard | Expr::RenameAlias { .. } => {
+                return Err(PolarsError::ComputeError(
+                    "Cannot determine an output column without a context for this expression"
+                        .into(),
+                ))
+            }
+            Expr::Columns(_) | Expr::DtypeColumn(_) => {
+                return Err(PolarsError::ComputeError(
+                    "This expression might produce multiple output names".into(),
+                ))
+            }
+            Expr::Count => return Ok(Arc::from(COUNT)),
             _ => {}
         }
     }
     Err(PolarsError::ComputeError(
         format!(
-            "No root column name could be found for expr {:?} in output name utility",
+            "No root column name could be found for expr '{:?}' when calling 'output_name'",
             expr
         )
         .into(),

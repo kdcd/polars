@@ -10,9 +10,12 @@ mod expr;
 mod from;
 pub(crate) mod function_expr;
 #[cfg(feature = "compile")]
-mod functions;
+pub mod functions;
 #[cfg(feature = "list")]
 mod list;
+#[cfg(feature = "meta")]
+mod meta;
+pub(crate) mod names;
 mod options;
 #[cfg(feature = "strings")]
 pub mod string;
@@ -471,9 +474,9 @@ impl Expr {
     pub fn arg_min(self) -> Self {
         let options = FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
-            input_wildcard_expansion: false,
             auto_explode: true,
             fmt_str: "arg_min",
+            ..Default::default()
         };
 
         self.function_with_options(
@@ -487,9 +490,9 @@ impl Expr {
     pub fn arg_max(self) -> Self {
         let options = FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
-            input_wildcard_expansion: false,
             auto_explode: true,
             fmt_str: "arg_max",
+            ..Default::default()
         };
 
         self.function_with_options(
@@ -500,29 +503,34 @@ impl Expr {
     }
 
     /// Get the index values that would sort this expression.
-    pub fn arg_sort(self, reverse: bool) -> Self {
-        assert!(
-            !has_expr(&self, |e| matches!(e, Expr::Wildcard)),
-            "wildcard not supported in argsort expr"
-        );
+    pub fn arg_sort(self, sort_options: SortOptions) -> Self {
         let options = FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
-            input_wildcard_expansion: true,
-            auto_explode: false,
             fmt_str: "arg_sort",
+            ..Default::default()
         };
 
         self.function_with_options(
-            move |s: Series| {
-                Ok(s.argsort(SortOptions {
-                    descending: reverse,
-                    ..Default::default()
-                })
-                .into_series())
-            },
+            move |s: Series| Ok(s.argsort(sort_options).into_series()),
             GetOutput::from_type(IDX_DTYPE),
             options,
         )
+    }
+
+    #[cfg(feature = "search_sorted")]
+    /// Find indices where elements should be inserted to maintain order.
+    pub fn search_sorted<E: Into<Expr>>(self, element: E) -> Expr {
+        let element = element.into();
+        Expr::Function {
+            input: vec![self, element],
+            function: FunctionExpr::SearchSorted,
+            options: FunctionOptions {
+                collect_groups: ApplyOptions::ApplyGroups,
+                auto_explode: true,
+                fmt_str: "search_sorted",
+                ..Default::default()
+            },
+        }
     }
 
     /// Cast expression to another data type.
@@ -571,6 +579,14 @@ impl Expr {
         }
     }
 
+    /// Returns the `k` largest elements.
+    ///
+    /// This has time complexity `O(n + k log(n))`.
+    #[cfg(feature = "top_k")]
+    pub fn top_k(self, k: usize, reverse: bool) -> Self {
+        self.apply_private(FunctionExpr::TopK { k, reverse }, "top_k")
+    }
+
     /// Reverse column
     pub fn reverse(self) -> Self {
         Expr::Reverse(Box::new(self))
@@ -600,6 +616,8 @@ impl Expr {
                 input_wildcard_expansion: false,
                 auto_explode: false,
                 fmt_str: "map",
+                cast_to_supertypes: false,
+                allow_rename: false,
             },
         }
     }
@@ -613,6 +631,8 @@ impl Expr {
                 input_wildcard_expansion: false,
                 auto_explode: false,
                 fmt_str,
+                cast_to_supertypes: false,
+                allow_rename: false,
             },
         }
     }
@@ -633,9 +653,8 @@ impl Expr {
             output_type,
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "",
+                ..Default::default()
             },
         }
     }
@@ -659,9 +678,8 @@ impl Expr {
             output_type,
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyList,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "map_list",
+                ..Default::default()
             },
         }
     }
@@ -707,9 +725,8 @@ impl Expr {
             output_type,
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyGroups,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "",
+                ..Default::default()
             },
         }
     }
@@ -720,9 +737,8 @@ impl Expr {
             function: function_expr,
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyGroups,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str,
+                ..Default::default()
             },
         }
     }
@@ -743,9 +759,9 @@ impl Expr {
             output_type,
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyGroups,
-                input_wildcard_expansion: false,
-                auto_explode: true,
                 fmt_str: "",
+                auto_explode: true,
+                ..Default::default()
             },
         }
     }
@@ -756,6 +772,7 @@ impl Expr {
         arguments: &[Expr],
         fmt_str: &'static str,
         auto_explode: bool,
+        cast_to_supertypes: bool,
     ) -> Self {
         let mut input = Vec::with_capacity(arguments.len() + 1);
         input.push(self);
@@ -766,9 +783,10 @@ impl Expr {
             function: function_expr,
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyGroups,
-                input_wildcard_expansion: false,
                 auto_explode,
                 fmt_str,
+                cast_to_supertypes,
+                ..Default::default()
             },
         }
     }
@@ -778,6 +796,7 @@ impl Expr {
         function_expr: FunctionExpr,
         arguments: &[Expr],
         fmt_str: &'static str,
+        cast_to_supertypes: bool,
     ) -> Self {
         let mut input = Vec::with_capacity(arguments.len() + 1);
         input.push(self);
@@ -788,9 +807,10 @@ impl Expr {
             function: function_expr,
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
                 auto_explode: true,
                 fmt_str,
+                cast_to_supertypes,
+                ..Default::default()
             },
         }
     }
@@ -840,6 +860,7 @@ impl Expr {
             &[fill_value.into()],
             "shift_and_fill",
             false,
+            true,
         )
     }
 
@@ -902,9 +923,9 @@ impl Expr {
     pub fn product(self) -> Self {
         let options = FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
-            input_wildcard_expansion: false,
             auto_explode: true,
             fmt_str: "product",
+            ..Default::default()
         };
 
         self.function_with_options(
@@ -966,9 +987,40 @@ impl Expr {
     /// Clip underlying values to a set boundary.
     #[cfg(feature = "round_series")]
     #[cfg_attr(docsrs, doc(cfg(feature = "round_series")))]
-    pub fn clip(self, min: f64, max: f64) -> Self {
-        self.map(move |s: Series| s.clip(min, max), GetOutput::same_type())
-            .with_fmt("clip")
+    pub fn clip(self, min: AnyValue<'_>, max: AnyValue<'_>) -> Self {
+        self.map_private(
+            FunctionExpr::Clip {
+                min: Some(min.into_static().unwrap()),
+                max: Some(max.into_static().unwrap()),
+            },
+            "clip",
+        )
+    }
+
+    /// Clip underlying values to a set boundary.
+    #[cfg(feature = "round_series")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "round_series")))]
+    pub fn clip_max(self, max: AnyValue<'_>) -> Self {
+        self.map_private(
+            FunctionExpr::Clip {
+                min: None,
+                max: Some(max.into_static().unwrap()),
+            },
+            "clip_max",
+        )
+    }
+
+    /// Clip underlying values to a set boundary.
+    #[cfg(feature = "round_series")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "round_series")))]
+    pub fn clip_min(self, min: AnyValue<'_>) -> Self {
+        self.map_private(
+            FunctionExpr::Clip {
+                min: Some(min.into_static().unwrap()),
+                max: None,
+            },
+            "clip_min",
+        )
     }
 
     /// Convert all values to their absolute/positive value.
@@ -1064,9 +1116,9 @@ impl Expr {
             },
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "fill_null",
+                cast_to_supertypes: true,
+                ..Default::default()
             },
         }
     }
@@ -1139,6 +1191,8 @@ impl Expr {
                 input_wildcard_expansion: false,
                 auto_explode: false,
                 fmt_str: "pow",
+                cast_to_supertypes: false,
+                allow_rename: false,
             },
         }
     }
@@ -1151,9 +1205,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::Sin),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "sin",
+                ..Default::default()
             },
         }
     }
@@ -1166,9 +1219,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::Cos),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "cos",
+                ..Default::default()
             },
         }
     }
@@ -1181,9 +1233,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::Tan),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "tan",
+                ..Default::default()
             },
         }
     }
@@ -1196,9 +1247,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::ArcSin),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "arcsin",
+                ..Default::default()
             },
         }
     }
@@ -1211,9 +1261,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::ArcCos),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "arccos",
+                ..Default::default()
             },
         }
     }
@@ -1226,9 +1275,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::ArcTan),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "arctan",
+                ..Default::default()
             },
         }
     }
@@ -1241,9 +1289,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::Sinh),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "sinh",
+                ..Default::default()
             },
         }
     }
@@ -1256,9 +1303,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::Cosh),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "cosh",
+                ..Default::default()
             },
         }
     }
@@ -1271,9 +1317,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::Tanh),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "tanh",
+                ..Default::default()
             },
         }
     }
@@ -1286,9 +1331,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::ArcSinh),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "arcsinh",
+                ..Default::default()
             },
         }
     }
@@ -1301,9 +1345,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::ArcCosh),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "arccosh",
+                ..Default::default()
             },
         }
     }
@@ -1316,9 +1359,8 @@ impl Expr {
             function: FunctionExpr::Trigonometry(TrigonometricFunction::ArcTanh),
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "arctanh",
+                ..Default::default()
             },
         }
     }
@@ -1331,9 +1373,8 @@ impl Expr {
             function: FunctionExpr::Sign,
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                input_wildcard_expansion: false,
-                auto_explode: false,
                 fmt_str: "sign",
+                ..Default::default()
             },
         }
     }
@@ -1369,9 +1410,9 @@ impl Expr {
         let arguments = &[other];
         // we don't have to apply on groups, so this is faster
         if has_literal {
-            self.map_many_private(FunctionExpr::IsIn, arguments, "is_in_map")
+            self.map_many_private(FunctionExpr::IsIn, arguments, "is_in_map", true)
         } else {
-            self.apply_many_private(FunctionExpr::IsIn, arguments, "is_in_apply", true)
+            self.apply_many_private(FunctionExpr::IsIn, arguments, "is_in_apply", true, true)
         }
     }
 
@@ -1986,7 +2027,7 @@ impl Expr {
             move |s| s.sample_frac(frac, with_replacement, shuffle, seed),
             GetOutput::same_type(),
         )
-        .with_fmt("shuffle")
+        .with_fmt("sample_frac")
     }
 
     #[cfg(feature = "ewma")]
@@ -1999,7 +2040,7 @@ impl Expr {
                 _ => Float64,
             }),
         )
-        .with_fmt("emw_mean")
+        .with_fmt("ewm_mean")
     }
 
     #[cfg(feature = "ewma")]
@@ -2012,7 +2053,7 @@ impl Expr {
                 _ => Float64,
             }),
         )
-        .with_fmt("emw_std")
+        .with_fmt("ewm_std")
     }
 
     #[cfg(feature = "ewma")]
@@ -2025,7 +2066,7 @@ impl Expr {
                 _ => Float64,
             }),
         )
-        .with_fmt("emw_var")
+        .with_fmt("ewm_var")
     }
 
     /// Check if any boolean value is `true`
@@ -2150,7 +2191,7 @@ impl Expr {
                 }
             }),
         )
-        .with_fmt("log")
+        .with_fmt("exp")
     }
 
     #[cfg(feature = "log")]
@@ -2225,6 +2266,10 @@ impl Expr {
     pub fn struct_(self) -> struct_::StructNameSpace {
         struct_::StructNameSpace(self)
     }
+    #[cfg(feature = "meta")]
+    pub fn meta(self) -> meta::MetaNameSpace {
+        meta::MetaNameSpace(self)
+    }
 }
 
 // Arithmetic ops
@@ -2290,9 +2335,8 @@ where
         output_type,
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyFlat,
-            input_wildcard_expansion: false,
-            auto_explode: false,
             fmt_str: "",
+            ..Default::default()
         },
     }
 }
@@ -2317,9 +2361,9 @@ where
         output_type,
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyList,
-            input_wildcard_expansion: false,
             auto_explode: true,
             fmt_str: "",
+            ..Default::default()
         },
     }
 }
@@ -2346,9 +2390,9 @@ where
         output_type,
         options: FunctionOptions {
             collect_groups: ApplyOptions::ApplyGroups,
-            input_wildcard_expansion: false,
             auto_explode: true,
             fmt_str: "",
+            ..Default::default()
         },
     }
 }

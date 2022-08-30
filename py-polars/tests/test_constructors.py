@@ -126,8 +126,12 @@ def test_init_ndarray(monkeypatch: Any) -> None:
 
     # 2D array - default to column orientation
     df = pl.DataFrame(np.array([[1, 2], [3, 4]]))
-    truth = pl.DataFrame({"column_0": [1, 2], "column_1": [3, 4]})
+    truth = pl.DataFrame({"column_0": [1, 3], "column_1": [2, 4]})
     assert df.frame_equal(truth)
+
+    # no orientation is numpy convention
+    df = pl.DataFrame(np.ones((3, 1)))
+    assert df.shape == (3, 1)
 
     # 2D array - row orientation inferred
     df = pl.DataFrame(np.array([[1, 2, 3], [4, 5, 6]]), columns=["a", "b", "c"])
@@ -413,3 +417,16 @@ def test_from_dicts_list_struct_without_inner_dtype() -> None:
         ],
         "days_of_week": [1, 2],
     }
+
+
+def test_upcast_primitive_and_strings() -> None:
+    assert pl.Series([1, 1.0, 1]).dtype == pl.Float64
+    assert pl.Series([1, 1, "1.0"]).dtype == pl.Utf8
+    assert pl.Series([1, 1.0, "1.0"]).dtype == pl.Utf8
+    assert pl.Series([True, 1]).dtype == pl.Int64
+    assert pl.Series([True, 1.0]).dtype == pl.Float64
+    assert pl.Series([True, "1.0"]).dtype == pl.Utf8
+    assert pl.from_dict({"a": [1, 2.1, 3], "b": [4, 5, 6.4]}).dtypes == [
+        pl.Float64,
+        pl.Float64,
+    ]

@@ -10,16 +10,10 @@ from polars.utils import (
     _date_to_pl_date,
     _datetime_to_pl_timestamp,
     _timedelta_to_pl_timedelta,
-    in_nanoseconds_window,
 )
 
 if TYPE_CHECKING:
     from polars.internals.type_aliases import TimeUnit
-
-
-def test_in_ns_window() -> None:
-    assert not in_nanoseconds_window(datetime(year=2600, month=1, day=1))
-    assert in_nanoseconds_window(datetime(year=2000, month=1, day=1))
 
 
 @pytest.mark.parametrize(
@@ -53,5 +47,13 @@ def test_timedelta_to_pl_timedelta() -> None:
 
 
 def test_estimated_size() -> None:
-    a = pl.Series([1, 2, 3])
-    assert a.estimated_size() == a.to_frame().estimated_size()
+    s = pl.Series("n", list(range(100)))
+    df = s.to_frame()
+
+    for sz in (s.estimated_size(), s.estimated_size("b"), s.estimated_size("bytes")):
+        assert sz == df.estimated_size()
+
+    assert s.estimated_size("kb") == (df.estimated_size("b") / 1024)
+    assert s.estimated_size("mb") == (df.estimated_size("kb") / 1024)
+    assert s.estimated_size("gb") == (df.estimated_size("mb") / 1024)
+    assert s.estimated_size("tb") == (df.estimated_size("gb") / 1024)

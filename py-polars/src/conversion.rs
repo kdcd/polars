@@ -1,6 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 
+#[cfg(feature = "object")]
 use polars::chunked_array::object::PolarsObjectSafe;
 use polars::frame::row::Row;
 use polars::frame::{groupby::PivotAgg, NullStrategy};
@@ -217,6 +218,7 @@ impl IntoPy<PyObject> for Wrap<AnyValue<'_>> {
             AnyValue::List(v) => PySeries::new(v).to_list(),
             AnyValue::Struct(vals, flds) => struct_dict(py, vals, flds),
             AnyValue::StructOwned(payload) => struct_dict(py, payload.0, &payload.1),
+            #[cfg(feature = "object")]
             AnyValue::Object(v) => {
                 let s = format!("{}", v);
                 s.into_py(py)
@@ -259,6 +261,7 @@ impl ToPyObject for Wrap<DataType> {
                 let duration_class = pl.getattr("Duration").unwrap();
                 duration_class.call1((tu.to_ascii(),)).unwrap().into()
             }
+            #[cfg(feature = "object")]
             DataType::Object(_) => pl.getattr("Object").unwrap().into(),
             DataType::Categorical(_) => pl.getattr("Categorical").unwrap().into(),
             DataType::Time => pl.getattr("Time").unwrap().into(),
@@ -313,6 +316,7 @@ impl FromPyObject<'_> for Wrap<DataType> {
                     "Duration" => DataType::Duration(TimeUnit::Microseconds),
                     "Float32" => DataType::Float32,
                     "Float64" => DataType::Float64,
+                    #[cfg(feature = "object")]
                     "Object" => DataType::Object("unknown"),
                     "List" => DataType::List(Box::new(DataType::Boolean)),
                     "Null" => DataType::Null,
@@ -470,40 +474,39 @@ impl<'s> FromPyObject<'s> for Wrap<AnyValue<'s>> {
         } else if let Ok(v) = ob.extract::<&'s str>() {
             Ok(AnyValue::Utf8(v).into())
         } else if ob.get_type().name()?.contains("datetime") {
-            let gil = Python::acquire_gil();
-            let py = gil.python();
+            Python::with_gil(|py| {
+                // windows
+                #[cfg(target_arch = "windows")]
+                {
+                    let kwargs = PyDict::new(py);
+                    kwargs.set_item("tzinfo", py.None())?;
+                    let dt = ob.call_method("replace", (), Some(kwargs))?;
 
-            // windows
-            #[cfg(target_arch = "windows")]
-            {
-                let kwargs = PyDict::new(py);
-                kwargs.set_item("tzinfo", py.None())?;
-                let dt = ob.call_method("replace", (), Some(kwargs))?;
-
-                let pytz = PyModule::import(py, "pytz")?;
-                let tz = pytz.call_method("timezone", ("UTC",), None)?;
-                let kwargs = PyDict::new(py);
-                kwargs.set_item("is_dst", py.None())?;
-                let loc_tz = tz.call_method("localize", (dt,), Some(kwargs))?;
-                loc_tz.call_method0("timestamp")?;
-                // s to us
-                let v = (ts.extract::<f64>()? * 1000_000.0) as i64;
-                Ok(AnyValue::Datetime(v, TimeUnit::Microseconds, &None).into())
-            }
-            // unix
-            #[cfg(not(target_arch = "windows"))]
-            {
-                let datetime = PyModule::import(py, "datetime")?;
-                let timezone = datetime.getattr("timezone")?;
-                let kwargs = PyDict::new(py);
-                kwargs.set_item("tzinfo", timezone.getattr("utc")?)?;
-                let dt = ob.call_method("replace", (), Some(kwargs))?;
-                let ts = dt.call_method0("timestamp")?;
-                // s to us
-                let v = (ts.extract::<f64>()? * 1_000_000.0) as i64;
-                // we choose us as that is pythons default unit
-                Ok(AnyValue::Datetime(v, TimeUnit::Microseconds, &None).into())
-            }
+                    let pytz = PyModule::import(py, "pytz")?;
+                    let tz = pytz.call_method("timezone", ("UTC",), None)?;
+                    let kwargs = PyDict::new(py);
+                    kwargs.set_item("is_dst", py.None())?;
+                    let loc_tz = tz.call_method("localize", (dt,), Some(kwargs))?;
+                    loc_tz.call_method0("timestamp")?;
+                    // s to us
+                    let v = (ts.extract::<f64>()? * 1000_000.0) as i64;
+                    Ok(AnyValue::Datetime(v, TimeUnit::Microseconds, &None).into())
+                }
+                // unix
+                #[cfg(not(target_arch = "windows"))]
+                {
+                    let datetime = PyModule::import(py, "datetime")?;
+                    let timezone = datetime.getattr("timezone")?;
+                    let kwargs = PyDict::new(py);
+                    kwargs.set_item("tzinfo", timezone.getattr("utc")?)?;
+                    let dt = ob.call_method("replace", (), Some(kwargs))?;
+                    let ts = dt.call_method0("timestamp")?;
+                    // s to us
+                    let v = (ts.extract::<f64>()? * 1_000_000.0) as i64;
+                    // we choose us as that is pythons default unit
+                    Ok(AnyValue::Datetime(v, TimeUnit::Microseconds, &None).into())
+                }
+            })
         } else if ob.is_none() {
             Ok(AnyValue::Null.into())
         } else if ob.is_instance_of::<PyDict>()? {
@@ -532,25 +535,25 @@ impl<'s> FromPyObject<'s> for Wrap<AnyValue<'s>> {
             let series = py_pyseries.extract::<PySeries>().unwrap().series;
             Ok(Wrap(AnyValue::List(series)))
         } else if ob.get_type().name()?.contains("date") {
-            let gil = Python::acquire_gil();
-            let py = gil.python();
-            let date = py_modules::UTILS
-                .getattr(py, "_date_to_pl_date")
-                .unwrap()
-                .call1(py, (ob,))
-                .unwrap();
-            let v = date.extract::<i32>(py).unwrap();
-            Ok(Wrap(AnyValue::Date(v)))
+            Python::with_gil(|py| {
+                let date = py_modules::UTILS
+                    .getattr(py, "_date_to_pl_date")
+                    .unwrap()
+                    .call1(py, (ob,))
+                    .unwrap();
+                let v = date.extract::<i32>(py).unwrap();
+                Ok(Wrap(AnyValue::Date(v)))
+            })
         } else if ob.get_type().name()?.contains("timedelta") {
-            let gil = Python::acquire_gil();
-            let py = gil.python();
-            let td = py_modules::UTILS
-                .getattr(py, "_timedelta_to_pl_timedelta")
-                .unwrap()
-                .call1(py, (ob, "us"))
-                .unwrap();
-            let v = td.extract::<i64>(py).unwrap();
-            Ok(Wrap(AnyValue::Duration(v, TimeUnit::Microseconds)))
+            Python::with_gil(|py| {
+                let td = py_modules::UTILS
+                    .getattr(py, "_timedelta_to_pl_timedelta")
+                    .unwrap()
+                    .call1(py, (ob, "us"))
+                    .unwrap();
+                let v = td.extract::<i64>(py).unwrap();
+                Ok(Wrap(AnyValue::Duration(v, TimeUnit::Microseconds)))
+            })
         } else {
             Err(PyErr::from(PyPolarsErr::Other(format!(
                 "row type not supported {:?}",
@@ -604,13 +607,7 @@ pub struct ObjectValue {
 
 impl Hash for ObjectValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let gil = Python::acquire_gil();
-        let python = gil.python();
-        let h = self
-            .inner
-            .as_ref(python)
-            .hash()
-            .expect("should be hashable");
+        let h = Python::with_gil(|py| self.inner.as_ref(py).hash().expect("should be hashable"));
         state.write_isize(h)
     }
 }
@@ -619,16 +616,16 @@ impl Eq for ObjectValue {}
 
 impl PartialEq for ObjectValue {
     fn eq(&self, other: &Self) -> bool {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-        match self
-            .inner
-            .as_ref(py)
-            .rich_compare(other.inner.as_ref(py), CompareOp::Eq)
-        {
-            Ok(result) => result.is_true().unwrap(),
-            Err(_) => false,
-        }
+        Python::with_gil(|py| {
+            match self
+                .inner
+                .as_ref(py)
+                .rich_compare(other.inner.as_ref(py), CompareOp::Eq)
+            {
+                Ok(result) => result.is_true().unwrap(),
+                Err(_) => false,
+            }
+        })
     }
 }
 
@@ -638,6 +635,7 @@ impl Display for ObjectValue {
     }
 }
 
+#[cfg(feature = "object")]
 impl PolarsObject for ObjectValue {
     fn type_name() -> &'static str {
         "object"
@@ -652,10 +650,10 @@ impl From<PyObject> for ObjectValue {
 
 impl<'a> FromPyObject<'a> for ObjectValue {
     fn extract(ob: &'a PyAny) -> PyResult<Self> {
-        let gil = Python::acquire_gil();
-        let python = gil.python();
-        Ok(ObjectValue {
-            inner: ob.to_object(python),
+        Python::with_gil(|py| {
+            Ok(ObjectValue {
+                inner: ob.to_object(py),
+            })
         })
     }
 }
@@ -663,6 +661,7 @@ impl<'a> FromPyObject<'a> for ObjectValue {
 /// # Safety
 ///
 /// The caller is responsible for checking that val is Object otherwise UB
+#[cfg(feature = "object")]
 impl From<&dyn PolarsObjectSafe> for &ObjectValue {
     fn from(val: &dyn PolarsObjectSafe) -> Self {
         unsafe { &*(val as *const dyn PolarsObjectSafe as *const ObjectValue) }
@@ -677,11 +676,7 @@ impl ToPyObject for ObjectValue {
 
 impl Default for ObjectValue {
     fn default() -> Self {
-        let gil = Python::acquire_gil();
-        let python = gil.python();
-        ObjectValue {
-            inner: python.None(),
-        }
+        Python::with_gil(|py| ObjectValue { inner: py.None() })
     }
 }
 

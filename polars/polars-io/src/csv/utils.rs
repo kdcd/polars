@@ -39,7 +39,7 @@ pub(crate) fn get_file_chunks(
 
         let end_pos = match next_line_position(
             &bytes[search_pos..],
-            expected_fields,
+            Some(expected_fields),
             delimiter,
             quote_char,
             eol_char,
@@ -285,7 +285,8 @@ pub fn infer_file_schema(
 
     let header_length = headers.len();
     // keep track of inferred field types
-    let mut column_types: Vec<PlHashSet<DataType>> = vec![PlHashSet::new(); header_length];
+    let mut column_types: Vec<PlHashSet<DataType>> =
+        vec![PlHashSet::with_capacity(4); header_length];
     // keep track of columns with nulls
     let mut nulls: Vec<bool> = vec![false; header_length];
 
@@ -496,7 +497,7 @@ fn decompress_impl<R: Read>(
             while line_count < n_rows {
                 match next_line_position(
                     &out[buf_pos + 1..],
-                    expected_fields,
+                    Some(expected_fields),
                     delimiter,
                     quote_char,
                     eol_char,

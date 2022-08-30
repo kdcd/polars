@@ -1,6 +1,5 @@
-use arrow::array::Array;
 use arrow::compute::concatenate::concatenate;
-use arrow::io::parquet::read::statistics::{self, deserialize, Statistics};
+use arrow::io::parquet::read::statistics::{deserialize, Statistics};
 use arrow::io::parquet::read::RowGroupMetaData;
 use polars_core::prelude::*;
 
@@ -21,15 +20,16 @@ impl ColumnStats {
     }
 
     pub fn null_count(&self) -> Option<usize> {
-        match &self.0.null_count {
-            statistics::Count::Single(arr) => {
-                if arr.is_valid(0) {
-                    Some(arr.value(0) as usize)
-                } else {
-                    None
-                }
+        match self.1.data_type() {
+            #[cfg(feature = "dtype-struct")]
+            DataType::Struct(_) => None,
+            _ => {
+                // the array holds the null count for every row group
+                // so we sum them to get them of the whole file.
+                Series::try_from(("", self.0.null_count.clone()))
+                    .unwrap()
+                    .sum()
             }
-            _ => None,
         }
     }
 

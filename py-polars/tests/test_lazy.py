@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, cast
 
 import numpy as np
@@ -589,6 +590,12 @@ def test_fill_nan() -> None:
         .collect()["a"]
         .series_equal(pl.Series("a", [1.0, 2.0, 3.0]))
     )
+    assert (
+        df.lazy()
+        .fill_nan(None)
+        .collect()["a"]
+        .series_equal(pl.Series("a", [1.0, None, 3.0]), null_equal=True)
+    )
     assert df.select(pl.col("a").fill_nan(2))["a"].series_equal(
         pl.Series("a", [1.0, 2.0, 3.0])
     )
@@ -883,6 +890,8 @@ def test_clip() -> None:
     df = pl.DataFrame({"a": [1, 2, 3, 4, 5]})
     assert df.select(pl.col("a").clip(2, 4))["a"].to_list() == [2, 2, 3, 4, 4]
     assert pl.Series([1, 2, 3, 4, 5]).clip(2, 4).to_list() == [2, 2, 3, 4, 4]
+    assert pl.Series([1, 2, 3, 4, 5]).clip_min(3).to_list() == [3, 3, 3, 4, 5]
+    assert pl.Series([1, 2, 3, 4, 5]).clip_max(3).to_list() == [1, 2, 3, 3, 3]
 
 
 def test_argminmax() -> None:
@@ -1420,3 +1429,26 @@ def test_all_any_accept_expr() -> None:
         "null_in_row": [False, True, True],
         "all_null_in_row": [False, False, False],
     }
+
+
+def test_lazy_cache_same_key() -> None:
+    df = pl.DataFrame({"a": [1, 2, 3], "b": [3, 4, 5], "c": ["x", "y", "z"]}).lazy()
+
+    # these have the same schema, but should not be used by cache as they are different
+    add_node = df.select([(pl.col("a") + pl.col("b")).alias("a"), pl.col("c")]).cache()
+    mult_node = df.select([(pl.col("a") * pl.col("b")).alias("a"), pl.col("c")]).cache()
+
+    assert mult_node.join(add_node, on="c", suffix="_mult").select(
+        [(pl.col("a") - pl.col("a_mult")).alias("a"), pl.col("c")]
+    ).collect().to_dict(False) == {"a": [-1, 2, 7], "c": ["x", "y", "z"]}
+
+
+def test_lazy_cache_hit(capfd: Any) -> None:
+    os.environ["POLARS_VERBOSE"] = "1"
+    df = pl.DataFrame({"a": [1, 2, 3], "b": [3, 4, 5], "c": ["x", "y", "z"]}).lazy()
+    add_node = df.select([(pl.col("a") + pl.col("b")).alias("a"), pl.col("c")]).cache()
+    assert add_node.join(add_node, on="c", suffix="_mult").select(
+        [(pl.col("a") - pl.col("a_mult")).alias("a"), pl.col("c")]
+    ).collect().to_dict(False) == {"a": [0, 0, 0], "c": ["x", "y", "z"]}
+    (out, _) = capfd.readouterr()
+    assert "CACHE HIT" in out

@@ -28,8 +28,8 @@ def test_invalid_utf8() -> None:
     with open(file, "wb") as f:
         f.write(bts)
 
-    a = pl.read_csv(file, has_headers=False, encoding="utf8-lossy")
-    b = pl.scan_csv(file, has_headers=False, encoding="utf8-lossy").collect()
+    a = pl.read_csv(file, has_header=False, encoding="utf8-lossy")
+    b = pl.scan_csv(file, has_header=False, encoding="utf8-lossy").collect()
     assert a.frame_equal(b, null_equal=True)
 
 
@@ -65,3 +65,18 @@ def test_scan_csv_schema_overwrite_and_dtypes_overwrite(foods_csv: str) -> None:
         .collect()
         .dtypes
     ) == [pl.Utf8, pl.Utf8, pl.Float32, pl.Int64]
+
+
+def test_lazy_n_rows(foods_csv: str) -> None:
+    df = (
+        pl.scan_csv(foods_csv, n_rows=4, row_count_name="idx")
+        .filter(pl.col("idx") > 2)
+        .collect()
+    )
+    assert df.to_dict(False) == {
+        "idx": [3],
+        "category": ["fruit"],
+        "calories": [60],
+        "fats_g": [0.0],
+        "sugars_g": [11],
+    }

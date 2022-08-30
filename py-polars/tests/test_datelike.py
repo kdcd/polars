@@ -115,15 +115,77 @@ def test_from_pydatetime() -> None:
     assert s.dt[0] == dates[0]
 
 
-def test_to_python_datetime() -> None:
-    df = pl.DataFrame({"a": [1, 2, 3]})
-    assert (
-        df.select(pl.col("a").cast(pl.Datetime).dt.timestamp())["a"].dtype == pl.Int64
+def test_int_to_python_datetime() -> None:
+    df = pl.DataFrame({"a": [100_000_000, 200_000_000]}).with_columns(
+        [
+            pl.col("a").cast(pl.Datetime).alias("b"),
+            pl.col("a").cast(pl.Datetime("ms")).alias("c"),
+            pl.col("a").cast(pl.Datetime("us")).alias("d"),
+            pl.col("a").cast(pl.Datetime("ns")).alias("e"),
+        ]
     )
+    assert df.rows() == [
+        (
+            100000000,
+            datetime(1970, 1, 1, 0, 1, 40),
+            datetime(1970, 1, 2, 3, 46, 40),
+            datetime(1970, 1, 1, 0, 1, 40),
+            datetime(1970, 1, 1, 0, 0, 0, 100000),
+        ),
+        (
+            200000000,
+            datetime(1970, 1, 1, 0, 3, 20),
+            datetime(1970, 1, 3, 7, 33, 20),
+            datetime(1970, 1, 1, 0, 3, 20),
+            datetime(1970, 1, 1, 0, 0, 0, 200000),
+        ),
+    ]
+    assert df.select(
+        [pl.col(col).dt.timestamp() for col in ("c", "d", "e")]
+        + [
+            getattr(pl.col("b").cast(pl.Duration).dt, unit)().alias(f"u[{unit}]")
+            for unit in ("milliseconds", "microseconds", "nanoseconds")
+        ]
+    ).rows() == [
+        (100000000000, 100000000, 100000, 100000, 100000000, 100000000000),
+        (200000000000, 200000000, 200000, 200000, 200000000, 200000000000),
+    ]
+
+
+def test_int_to_python_timedelta() -> None:
+    df = pl.DataFrame({"a": [100_001, 200_002]}).with_columns(
+        [
+            pl.col("a").cast(pl.Duration).alias("b"),
+            pl.col("a").cast(pl.Duration("ms")).alias("c"),
+            pl.col("a").cast(pl.Duration("us")).alias("d"),
+            pl.col("a").cast(pl.Duration("ns")).alias("e"),
+        ]
+    )
+    assert df.rows() == [
+        (
+            100001,
+            timedelta(microseconds=100001),
+            timedelta(seconds=100, microseconds=1000),
+            timedelta(microseconds=100001),
+            timedelta(microseconds=100),
+        ),
+        (
+            200002,
+            timedelta(microseconds=200002),
+            timedelta(seconds=200, microseconds=2000),
+            timedelta(microseconds=200002),
+            timedelta(microseconds=200),
+        ),
+    ]
+
+    assert df.select(
+        [pl.col(col).dt.timestamp() for col in ("c", "d", "e")]
+    ).rows() == [(100001, 100001, 100001), (200002, 200002, 200002)]
 
 
 def test_from_numpy() -> None:
-    # numpy support is limited; will be stored as object
+    # note: numpy timeunit support is limited to those supported by polars.
+    # as a result, datetime64[s] will be stored as object.
     x = np.asarray(range(100_000, 200_000, 10_000), dtype="datetime64[s]")
     s = pl.Series(x)
     assert s[0] == x[0]
@@ -240,10 +302,22 @@ def test_truncate() -> None:
     start = datetime(2001, 1, 1)
     stop = datetime(2001, 1, 2)
 
-    s1 = pl.date_range(start, stop, timedelta(minutes=30), name="dates", time_unit="ms")
-    s2 = pl.date_range(start, stop, timedelta(minutes=30), name="dates", time_unit="ns")
-    # we can pass strings and timedeltas
-    for out in [s1.dt.truncate("1h"), s2.dt.truncate(timedelta(hours=1))]:
+    s1 = pl.date_range(
+        start, stop, timedelta(minutes=30), name="dates[ms]", time_unit="ms"
+    )
+    s2 = pl.date_range(
+        start, stop, timedelta(minutes=30), name="dates[us]", time_unit="us"
+    )
+    s3 = pl.date_range(
+        start, stop, timedelta(minutes=30), name="dates[ns]", time_unit="ns"
+    )
+
+    # can pass strings and timedeltas
+    for out in [
+        s1.dt.truncate("1h"),
+        s2.dt.truncate("1h0m0s"),
+        s3.dt.truncate(timedelta(hours=1)),
+    ]:
         assert out.dt[0] == start
         assert out.dt[1] == start
         assert out.dt[2] == start + timedelta(hours=1)
@@ -296,6 +370,14 @@ def test_date_range() -> None:
         datetime(2022, 1, 1, 22, 30),
         datetime(2022, 1, 2, 0, 0),
     ]
+
+    result = pl.date_range(
+        datetime(2022, 1, 1), datetime(2022, 1, 1, 0, 1), "987654321ns"
+    )
+    assert len(result) == 61
+    assert result.dtype.tu == "ns"  # type: ignore[attr-defined]
+    assert result.dt.second()[-1] == 59
+    assert result.dt.nanosecond()[-1] == 259259260
 
 
 def test_date_comp() -> None:
@@ -1293,3 +1375,54 @@ def test_from_dict_tu_consistency() -> None:
     from_dicts = pl.from_dicts([{"dt": dt}])
 
     assert from_dict.dtypes == from_dicts.dtypes
+
+
+def test_date_parse_omit_day() -> None:
+    df = pl.DataFrame({"month": ["2022-01"]})
+    assert df.select(pl.col("month").str.strptime(pl.Date, fmt="%Y-%m"))[0, 0] == date(
+        2022, 1, 1
+    )
+    assert df.select(pl.col("month").str.strptime(pl.Datetime, fmt="%Y-%m"))[
+        0, 0
+    ] == datetime(2022, 1, 1)
+
+
+def test_shift_and_fill_group_logicals() -> None:
+    df = pl.from_records(
+        [
+            (date(2001, 1, 2), "A"),
+            (date(2001, 1, 3), "A"),
+            (date(2001, 1, 4), "A"),
+            (date(2001, 1, 3), "B"),
+            (date(2001, 1, 4), "B"),
+        ],
+        columns=["d", "s"],
+    )
+    assert df.select(
+        pl.col("d").shift_and_fill(-1, pl.col("d").max()).over("s")
+    ).dtypes == [pl.Date]
+
+
+def test_date_arr_concat() -> None:
+    expected = {"d": [[date(2000, 1, 1), date(2000, 1, 1)]]}
+
+    # type date
+    df = pl.DataFrame({"d": [date(2000, 1, 1)]})
+    assert df.select(pl.col("d").arr.concat(pl.col("d"))).to_dict(False) == expected
+    # type list[date]
+    df = pl.DataFrame({"d": [[date(2000, 1, 1)]]})
+    assert df.select(pl.col("d").arr.concat(pl.col("d"))).to_dict(False) == expected
+
+
+def test_date_timedelta() -> None:
+    df = pl.DataFrame({"date": pl.date_range(date(2001, 1, 1), date(2001, 1, 3), "1d")})
+    assert df.with_columns(
+        [
+            (pl.col("date") + timedelta(days=1)).alias("date_plus_one"),
+            (pl.col("date") - timedelta(days=1)).alias("date_min_one"),
+        ]
+    ).to_dict(False) == {
+        "date": [date(2001, 1, 1), date(2001, 1, 2), date(2001, 1, 3)],
+        "date_plus_one": [date(2001, 1, 2), date(2001, 1, 3), date(2001, 1, 4)],
+        "date_min_one": [date(2000, 12, 31), date(2001, 1, 1), date(2001, 1, 2)],
+    }

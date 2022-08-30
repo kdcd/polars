@@ -12,13 +12,10 @@ from polars.datatypes import (
     Datetime,
     Duration,
     PolarsDataType,
+    is_polars_dtype,
     py_type_to_dtype,
 )
-from polars.utils import (
-    _datetime_to_pl_timestamp,
-    _timedelta_to_pl_timedelta,
-    timedelta_in_nanoseconds_window,
-)
+from polars.utils import _datetime_to_pl_timestamp, _timedelta_to_pl_timedelta
 
 try:
     from polars.polars import arange as pyarange
@@ -173,14 +170,10 @@ def col(
     if isinstance(name, list):
         if len(name) == 0 or isinstance(name[0], str):
             return pli.wrap_expr(pycols(name))
-        elif (
-            isclass(name[0])
-            and issubclass(name[0], DataType)
-            or isinstance(name[0], DataType)
-        ):
+        elif is_polars_dtype(name[0]):
             return pli.wrap_expr(_dtype_cols(name))
         else:
-            raise ValueError("did expect argument of List[str] or List[DataType]")
+            raise ValueError("Expected list values to be all `str` or all `DataType`")
     return pli.wrap_expr(pycol(name))
 
 
@@ -552,25 +545,25 @@ def last(column: str | pli.Series | None = None) -> pli.Expr:
 
 
 @overload
-def head(column: str, n: int | None) -> pli.Expr:
+def head(column: str, n: int = 10) -> pli.Expr:
     ...
 
 
 @overload
-def head(column: pli.Series, n: int | None) -> pli.Series:
+def head(column: pli.Series, n: int = 10) -> pli.Series:
     ...
 
 
-def head(column: str | pli.Series, n: int | None = None) -> pli.Expr | pli.Series:
+def head(column: str | pli.Series, n: int = 10) -> pli.Expr | pli.Series:
     """
-    Get the first n rows of an Expression.
+    Get the first `n` rows.
 
     Parameters
     ----------
     column
         Column name or Series.
     n
-        Number of rows to take.
+        Number of rows to return.
 
     """
     if isinstance(column, pli.Series):
@@ -579,25 +572,25 @@ def head(column: str | pli.Series, n: int | None = None) -> pli.Expr | pli.Serie
 
 
 @overload
-def tail(column: str, n: int | None) -> pli.Expr:
+def tail(column: str, n: int = 10) -> pli.Expr:
     ...
 
 
 @overload
-def tail(column: pli.Series, n: int | None) -> pli.Series:
+def tail(column: pli.Series, n: int = 10) -> pli.Series:
     ...
 
 
-def tail(column: str | pli.Series, n: int | None = None) -> pli.Expr | pli.Series:
+def tail(column: str | pli.Series, n: int = 10) -> pli.Expr | pli.Series:
     """
-    Get the last n rows of an Expression.
+    Get the last `n` rows.
 
     Parameters
     ----------
     column
         Column name or Series.
     n
-        Number of rows to take.
+        Number of rows to return.
 
     """
     if isinstance(column, pli.Series):
@@ -644,19 +637,15 @@ def lit(value: Any, dtype: type[DataType] | None = None) -> pli.Expr:
     if isinstance(value, datetime):
         tu = "us"
         return lit(_datetime_to_pl_timestamp(value, tu)).cast(Datetime(tu))
-    if isinstance(value, timedelta):
-        # TODO: python timedelta should also default to 'us' units.
-        #  (needs some corresponding work on the Rust side first)
-        if timedelta_in_nanoseconds_window(value):
-            tu = "ns"
-        else:
-            tu = "ms"
+
+    elif isinstance(value, timedelta):
+        tu = "us"
         return lit(_timedelta_to_pl_timedelta(value, tu)).cast(Duration(tu))
 
-    if isinstance(value, date):
+    elif isinstance(value, date):
         return lit(datetime(value.year, value.month, value.day)).cast(Date)
 
-    if isinstance(value, pli.Series):
+    elif isinstance(value, pli.Series):
         name = value.name
         value = value._s
         e = pli.wrap_expr(pylit(value))
@@ -847,7 +836,7 @@ def fold(
     return pli.wrap_expr(pyfold(acc._pyexpr, f, exprs))
 
 
-def any(name: str | list[pli.Expr] | pli.Expr) -> pli.Expr:
+def any(name: str | list[str] | list[pli.Expr] | pli.Expr) -> pli.Expr:
     """Evaluate columnwise or elementwise with a bitwise OR operation."""
     if isinstance(name, (list, pli.Expr)):
         return fold(lit(False), lambda a, b: a.cast(bool) | b.cast(bool), name).alias(

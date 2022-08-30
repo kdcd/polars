@@ -8,7 +8,7 @@ pub(crate) mod aggregations;
 #[cfg(feature = "avro")]
 #[cfg_attr(docsrs, doc(cfg(feature = "avro")))]
 pub mod avro;
-#[cfg(feature = "csv-file")]
+#[cfg(any(feature = "csv-file", feature = "json"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "csv-file")))]
 pub mod csv;
 #[cfg(feature = "parquet")]
@@ -24,7 +24,12 @@ pub mod json;
 #[cfg_attr(docsrs, doc(cfg(feature = "json")))]
 pub mod ndjson_core;
 
-#[cfg(any(feature = "csv-file", feature = "parquet", feature = "ipc"))]
+#[cfg(any(
+    feature = "csv-file",
+    feature = "parquet",
+    feature = "ipc",
+    feature = "json"
+))]
 pub mod mmap;
 mod options;
 #[cfg(feature = "parquet")]
