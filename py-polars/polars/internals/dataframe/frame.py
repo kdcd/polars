@@ -5887,7 +5887,7 @@ class DataFrame:
 
     def mjoin(
         self: DF,
-        other: LazyFrame,
+        other: DF,
         left_on: str | pli.Expr | list[str | pli.Expr] | None = None,
         right_on: str | pli.Expr | list[str | pli.Expr] | None = None,
         on: str | pli.Expr | list[str | pli.Expr] | None = None,
@@ -5904,14 +5904,14 @@ class DataFrame:
         return r
     
     def mconcat(self: DF, other: DF, how: str = "vertical") -> DF:
-        return pli.concat([self, other], how = how)
+        return pli.concat([self, other], how = how) #type: ignore
 
 
-def _collect_expressions(*exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> List[pl.Expr]:
+def _collect_expressions(*exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> List[pli.Expr]:
     expr_list = list(exprs)
     for key, expr in named_exprs.items():
-        if not isinstance(expr, pl.Expr):
-            expr = pl.lit(expr)
+        if not isinstance(expr, pli.Expr):
+            expr = pli.lit(expr)
         expr_list.append(expr.alias(key)) #type: ignore
     return expr_list #type: ignore
 

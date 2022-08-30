@@ -811,6 +811,16 @@ class GroupBy(Generic[DF]):
         """
         return self.agg(pli.all().list())
 
+    def magg(self, *exprs: pli.Expr | pli.Series | str | int | float | bool, **named_exprs: pli.Expr | pli.Series | str | int | float | bool) -> pli.DataFrame:
+        return self.agg(_collect_expressions(*exprs, **named_exprs))
+
+def _collect_expressions(*exprs: pli.Expr | pli.Series | str | int | float | bool, **named_exprs: pli.Expr | pli.Series | str | int | float | bool) -> List[pli.Expr]: #type: ignore
+    expr_list = list(exprs)
+    for key, expr in named_exprs.items():
+        if not isinstance(expr, pli.Expr):
+            expr = pli.lit(expr)
+        expr_list.append(expr.alias(key)) #type: ignore
+    return expr_list #type: ignore
 
 class RollingGroupBy(Generic[DF]):
     """
@@ -843,6 +853,9 @@ class RollingGroupBy(Generic[DF]):
             .agg(aggs)
             .collect(no_optimization=True, string_cache=False)
         )
+
+    def magg(self, *exprs: pli.Expr | pli.Series | str | int | float | bool, **named_exprs: pli.Expr | pli.Series | str | int | float | bool) -> pli.DataFrame:
+        return self.agg(_collect_expressions(*exprs, **named_exprs))
 
 
 class DynamicGroupBy(Generic[DF]):
@@ -889,6 +902,9 @@ class DynamicGroupBy(Generic[DF]):
             .agg(aggs)
             .collect(no_optimization=True, string_cache=False)
         )
+    
+    def magg(self, *exprs: pli.Expr | pli.Series | str | int | float | bool, **named_exprs: pli.Expr | pli.Series | str | int | float | bool) -> pli.DataFrame:
+        return self.agg(_collect_expressions(*exprs, **named_exprs))
 
 
 class GBSelection(Generic[DF]):

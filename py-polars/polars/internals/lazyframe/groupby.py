@@ -234,14 +234,14 @@ class LazyGroupBy(Generic[LDF]):
         """
         return self._lazyframe_class._from_pyldf(self.lgb.apply(f))
 
-    def magg(self, *exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> LDF:
+    def magg(self, *exprs: pli.Expr | pli.Series | str | int | float | bool, **named_exprs: pli.Expr | pli.Series | str | int | float | bool) -> LDF:
         return self.agg(_collect_expressions(*exprs, **named_exprs))
 
 
-def _collect_expressions(*exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> List[pl.Expr]:
+def _collect_expressions(*exprs: pli.Expr | pli.Series | str | int | float | bool, **named_exprs: pli.Expr | pli.Series | str | int | float | bool) -> List[pl.Expr]:
     expr_list = list(exprs)
     for key, expr in named_exprs.items():
         if not isinstance(expr, pli.Expr):
-            expr = pl.lit(expr)
+            expr = pli.lit(expr)
         expr_list.append(expr.alias(key)) #type: ignore
     return expr_list #type: ignore
