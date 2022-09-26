@@ -6058,6 +6058,12 @@ class DataFrame:
     def mconcat(self: DF, other: DF, how: str = "vertical") -> DF:
         return pli.concat([self, other], how = how) #type: ignore
 
+    # def __getattr__(self, key): # type: ignore
+    #     try:
+    #         return self[key]
+    #     except KeyError:
+    #         raise AttributeError
+
 
 def _collect_expressions(*exprs: pli.Expr | pli.Series | str, **named_exprs: pli.Expr | pli.Series | str) -> List[pli.Expr]:
     expr_list = list(exprs)
